@@ -7,7 +7,7 @@ return {
     if not configs.cangjie_lsp then
       configs.cangjie_lsp = {
         default_config = {
-          cmd = { "/home/elliot/tools/SDK/cangjie/tools/bin/LSPServer", "--log-path", "/home/elliot/" },
+          cmd = { "$CANGJIE_SDK_PATH/tools/bin/LSPServer" },
           root_dir = lspconfig.util.root_pattern(".git"),
           filetypes = { "Cangjie" },
           on_attach = function(client, bufnr)
