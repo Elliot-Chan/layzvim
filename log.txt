@@ -1,0 +1,365 @@
+2025-08-08 02:10:38 1754590238057:[Info][Thread 130321747608448] LSP Starting over stdin/stdout 
+
+2025-08-08 02:10:38 1754590238057:[Info]receive message body:{"method":"initialize","id":1,"params":{"initializationOptions":{},"workspaceFolders":[{"name":"/home/elliot/.config/nvim","uri":"file:///home/elliot/.config/nvim"}],"workDoneToken":"1","clientInfo":{"name":"Neovim","version":"0.11.3+v0.11.3"},"trace":"off","processId":55693,"rootPath":"/home/elliot/.config/nvim","rootUri":"file:///home/elliot/.config/nvim","capabilities":{"window":{"showDocument":{"support":true},"showMessage":{"messageActionItem":{"additionalPropertiesSupport":true}},"workDoneProgress":true},"workspace":{"workspaceEdit":{"resourceOperations":["rename","create","delete"]},"didChangeConfiguration":{"dynamicRegistration":false},"inlayHint":{"refreshSupport":true},"applyEdit":true,"workspaceFolders":true,"semanticTokens":{"refreshSupport":true},"symbol":{"dynamicRegistration":false,"symbolKind":{"valueSet":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26]}},"configuration":true,"didChangeWatchedFiles":{"dynamicRegistration":false,"relativePatternSupport":true}},"textDocument":{"inlayHint":{"dynamicRegistration":true,"resolveSupport":{"properties":["textEdits","tooltip","location","command"]}},"hover":{"dynamicRegistration":true,"contentFormat":["markdown","plaintext"]},"publishDiagnostics":{"relatedInformation":true,"tagSupport":{"valueSet":[1,2]},"dataSupport":true},"rangeFormatting":{"dynamicRegistration":true,"rangesSupport":true},"definition":{"dynamicRegistration":true,"linkSupport":true},"declaration":{"linkSupport":true},"documentHighlight":{"dynamicRegistration":false},"documentSymbol":{"hierarchicalDocumentSymbolSupport":true,"dynamicRegistration":false,"symbolKind":{"valueSet":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26]}},"references":{"dynamicRegistration":false},"codeAction":{"resolveSupport":{"properties":["edit","command"]},"dynamicRegistration":true,"dataSupport":true,"codeActionLiteralSupport":{"codeActionKind":{"valueSet":["","quickfix","refactor","refactor.extract","refactor.inline","refactor.rewrite","source","source.organizeImports"]}},"isPreferredSupport":true},"codeLens":{"dynamicRegistration":false,"resolveSupport":{"properties":["command"]}},"implementation":{"linkSupport":true},"callHierarchy":{"dynamicRegistration":false},"semanticTokens":{"multilineTokenSupport":false,"overlappingTokenSupport":true,"tokenModifiers":["declaration","definition","readonly","static","deprecated","abstract","async","modification","documentation","defaultLibrary"],"tokenTypes":["namespace","type","class","enum","interface","struct","typeParameter","parameter","variable","property","enumMember","event","function","method","macro","keyword","modifier","comment","string","number","regexp","operator","decorator"],"requests":{"range":false,"full":{"delta":true}},"dynamicRegistration":false,"formats":["relative"],"augmentsSyntaxTokens":true,"serverCancelSupport":false},"synchronization":{"willSave":true,"willSaveWaitUntil":true,"dynamicRegistration":false,"didSave":true},"foldingRange":{"foldingRangeKind":{"valueSet":["comment","imports","region"]},"foldingRange":{"collapsedText":true},"dynamicRegistration":false,"lineFoldingOnly":true},"completion":{"completionItem":{"snippetSupport":true,"resolveSupport":{"properties":["additionalTextEdits","command"]},"tagSupport":{"valueSet":[1]},"preselectSupport":false,"documentationFormat":["markdown","plaintext"],"deprecatedSupport":true,"commitCharactersSupport":false},"dynamicRegistration":false,"contextSupport":true,"completionList":{"itemDefaults":["editRange","insertTextFormat","insertTextMode","data"]},"completionItemKind":{"valueSet":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25]}},"diagnostic":{"dynamicRegistration":false,"tagSupport":{"valueSet":[1,2]}},"signatureHelp":{"dynamicRegistration":false,"signatureInformation":{"documentationFormat":["markdown","plaintext"],"activeParameterSupport":true,"parameterInformation":{"labelOffsetSupport":true}}},"typeDefinition":{"linkSupport":true},"formatting":{"dynamicRegistration":true},"rename":{"dynamicRegistration":true,"prepareSupport":true}},"general":{"positionEncodings":["utf-8","utf-16","utf-32"]}}},"jsonrpc":"2.0"}
+2025-08-08 02:10:38 1754590238057:[Info]LD_LIBRARY_PATH is : /home/elliot/tools/SDK/cangjie/runtime/lib/linux_x86_64_llvm/libcangjie-runtime.so
+2025-08-08 02:10:38 1754590238058:[Info]Load modules from (environment):/home/elliot/tools/SDK/cangjie
+2025-08-08 02:10:38 1754590238058:[Info]cjcPath is /home/elliot/tools/SDK/cangjie/bin/
+2025-08-08 02:10:38 1754590238074:[Warning]#### execute SetSourceCodeImportStatus start ####
+2025-08-08 02:10:38 1754590238074:[Warning]#### execute SetSourceCodeImportStatus end ####
+2025-08-08 02:10:38 1754590238074:[Warning]#### execute PerformParse start ####
+2025-08-08 02:10:38 1754590238074:[Warning]#### execute PerformParse end ####
+2025-08-08 02:10:38 1754590238074:[Warning]#### execute PerformConditionCompile start ####
+2025-08-08 02:10:38 1754590238074:[Warning]#### execute PerformConditionCompile end ####
+2025-08-08 02:10:38 1754590238074:[Warning]#### execute SetSourceCodeImportStatus start ####
+2025-08-08 02:10:38 1754590238074:[Warning]#### execute SetSourceCodeImportStatus end ####
+2025-08-08 02:10:38 1754590238196:[Info][Thread 130321747608448] All tasks are completed in full compilation 
+
+2025-08-08 02:10:38 1754590238197:[Info]send message body:{"id":1,"jsonrpc":"2.0","result":{"capabilities":{"breakpointsProvider":true,"callHierarchyProvider":true,"codeLensProvider":true,"completionProvider":{"resolveProvider":false,"triggerCharacters":[".","`"]},"definitionProvider":true,"documentHighlightProvider":true,"documentLinkProvider":{"resolveProvider":true},"documentSymbolProvider":true,"hoverProvider":true,"referencesProvider":true,"renameProvider":{"prepareProvider":true},"semaHighlightProvider":true,"semanticTokensProvider":{"full":{"delta":true},"legend":{"tokenModifiers":["declaration","documentation","static","abstract","deprecated","async","readonly"],"tokenTypes":["comment","keyword","string","number","regexp","operator","namespace","type","struct","class","interface","enum","typeParameter","function","member","property","macro","variable","parameter","label"]},"range":false},"signatureHelpProvider":{"triggerCharacters":["(",","]},"textDocumentSync":2,"typeHierarchyProvider":true,"workspaceSymbolProvider":true},"serverInfo":{"name":"Cangjie language server","version":"1.0"}}}
+2025-08-08 02:10:38 1754590238197:[Info]receive message body:{"jsonrpc":"2.0","params":{},"method":"initialized"}
+2025-08-08 02:10:38 1754590238197:[Info]receive message body:{"jsonrpc":"2.0","params":{"textDocument":{"text":"\n","uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj","languageId":"cangjie","version":0}},"method":"textDocument/didOpen"}
+2025-08-08 02:10:38 1754590238197:[Warning]Failed to decode request or request not meet requirement, method:textDocument/didOpen
+2025-08-08 02:10:38 1754590238198:[Info]receive message body:{"method":"textDocument/semanticTokens/full","id":2,"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}},"jsonrpc":"2.0"}
+2025-08-08 02:10:38 1754590238198:[Log]ArkLanguageServer::OnSemanticTokens in.
+2025-08-08 02:10:38 1754590238198:[Warning]No didopen was received before OnSemanticTokens, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:38 1754590238198:[Info]send message body:{"id":2,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:38 1754590238198:[Info]receive message body:{"method":"textDocument/documentSymbol","id":3,"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}},"jsonrpc":"2.0"}
+2025-08-08 02:10:38 1754590238198:[Log]ArkLanguageServer::OnDocumentSymbol in
+2025-08-08 02:10:38 1754590238198:[Log]ArkLanguageServer::GetDiagsOfCurFile in, file:/home/elliot/.config/nvim/lua/plugins/foo.cj.
+2025-08-08 02:10:38 1754590238198:[Info]file:/home/elliot/.config/nvim/lua/plugins/foo.cj, diagnostic is null.
+2025-08-08 02:10:38 1754590238198:[Log]ArkLanguageServer::ReadyForDiagnostics in, file:/home/elliot/.config/nvim/lua/plugins/foo.cj.
+2025-08-08 02:10:38 1754590238198:[Log]ArkLanguageServer::PublishDiagnostics in, file:file:///home/elliot/.config/nvim/lua/plugins/foo.cj.
+2025-08-08 02:10:38 1754590238198:[Info]send message body:{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}}
+2025-08-08 02:10:38 1754590238198:[Info]send message body:{"id":3,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:40 1754590240015:[Info]receive message body:{"method":"textDocument/documentHighlight","id":4,"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"},"position":{"line":0,"character":0}},"jsonrpc":"2.0"}
+2025-08-08 02:10:40 1754590240016:[Log]ArkLanguageServer::OnDocumentHighlight in.
+2025-08-08 02:10:40 1754590240016:[Warning]No didopen was received before OnDocumentHighlight, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:40 1754590240016:[Info]send message body:{"id":4,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:40 1754590240153:[Info]receive message body:{"method":"shutdown","id":5,"jsonrpc":"2.0"}
+2025-08-08 02:10:40 1754590240153:[Info]send message body:{"id":5,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:40 1754590240163:[Info]receive message body:{"jsonrpc":"2.0","method":"exit"}
+2025-08-08 02:10:40 1754590240163:[Info][Thread 130321747608448] LSP finished 
+
+2025-08-08 02:10:44 1754590244873:[Info][Thread 126271534949248] LSP Starting over stdin/stdout 
+
+2025-08-08 02:10:44 1754590244873:[Info]receive message body:{"params":{"initializationOptions":{},"trace":"off","rootPath":"/home/elliot/.config/nvim","clientInfo":{"name":"Neovim","version":"0.11.3+v0.11.3"},"processId":55842,"capabilities":{"workspace":{"didChangeWatchedFiles":{"dynamicRegistration":false,"relativePatternSupport":true},"semanticTokens":{"refreshSupport":true},"symbol":{"dynamicRegistration":false,"symbolKind":{"valueSet":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26]}},"workspaceEdit":{"resourceOperations":["rename","create","delete"]},"didChangeConfiguration":{"dynamicRegistration":false},"inlayHint":{"refreshSupport":true},"applyEdit":true,"workspaceFolders":true,"configuration":true},"window":{"showDocument":{"support":true},"workDoneProgress":true,"showMessage":{"messageActionItem":{"additionalPropertiesSupport":true}}},"textDocument":{"references":{"dynamicRegistration":false},"rangeFormatting":{"rangesSupport":true,"dynamicRegistration":true},"documentHighlight":{"dynamicRegistration":false},"signatureHelp":{"signatureInformation":{"documentationFormat":["markdown","plaintext"],"activeParameterSupport":true,"parameterInformation":{"labelOffsetSupport":true}},"dynamicRegistration":false},"formatting":{"dynamicRegistration":true},"diagnostic":{"tagSupport":{"valueSet":[1,2]},"dynamicRegistration":false},"implementation":{"linkSupport":true},"codeLens":{"dynamicRegistration":false,"resolveSupport":{"properties":["command"]}},"completion":{"contextSupport":true,"completionItemKind":{"valueSet":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25]},"completionItem":{"documentationFormat":["markdown","plaintext"],"tagSupport":{"valueSet":[1]},"commitCharactersSupport":false,"snippetSupport":true,"resolveSupport":{"properties":["additionalTextEdits","command"]},"deprecatedSupport":true,"preselectSupport":false},"completionList":{"itemDefaults":["editRange","insertTextFormat","insertTextMode","data"]},"dynamicRegistration":false},"publishDiagnostics":{"relatedInformation":true,"tagSupport":{"valueSet":[1,2]},"dataSupport":true},"declaration":{"linkSupport":true},"documentSymbol":{"hierarchicalDocumentSymbolSupport":true,"symbolKind":{"valueSet":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26]},"dynamicRegistration":false},"foldingRange":{"lineFoldingOnly":true,"foldingRangeKind":{"valueSet":["comment","imports","region"]},"foldingRange":{"collapsedText":true},"dynamicRegistration":false},"inlayHint":{"dynamicRegistration":true,"resolveSupport":{"properties":["textEdits","tooltip","location","command"]}},"codeAction":{"codeActionLiteralSupport":{"codeActionKind":{"valueSet":["","quickfix","refactor","refactor.extract","refactor.inline","refactor.rewrite","source","source.organizeImports"]}},"isPreferredSupport":true,"resolveSupport":{"properties":["edit","command"]},"dataSupport":true,"dynamicRegistration":true},"rename":{"dynamicRegistration":true,"prepareSupport":true},"typeDefinition":{"linkSupport":true},"semanticTokens":{"tokenTypes":["namespace","type","class","enum","interface","struct","typeParameter","parameter","variable","property","enumMember","event","function","method","macro","keyword","modifier","comment","string","number","regexp","operator","decorator"],"formats":["relative"],"augmentsSyntaxTokens":true,"serverCancelSupport":false,"multilineTokenSupport":false,"overlappingTokenSupport":true,"dynamicRegistration":false,"requests":{"range":false,"full":{"delta":true}},"tokenModifiers":["declaration","definition","readonly","static","deprecated","abstract","async","modification","documentation","defaultLibrary"]},"callHierarchy":{"dynamicRegistration":false},"synchronization":{"didSave":true,"willSave":true,"willSaveWaitUntil":true,"dynamicRegistration":false},"hover":{"dynamicRegistration":true,"contentFormat":["markdown","plaintext"]},"definition":{"linkSupport":true,"dynamicRegistration":true}},"general":{"positionEncodings":["utf-8","utf-16","utf-32"]}},"rootUri":"file:///home/elliot/.config/nvim","workDoneToken":"1","workspaceFolders":[{"uri":"file:///home/elliot/.config/nvim","name":"/home/elliot/.config/nvim"}]},"method":"initialize","id":1,"jsonrpc":"2.0"}
+2025-08-08 02:10:44 1754590244873:[Info]LD_LIBRARY_PATH is : /home/elliot/tools/SDK/cangjie/runtime/lib/linux_x86_64_llvm/libcangjie-runtime.so
+2025-08-08 02:10:44 1754590244873:[Info]Load modules from (environment):/home/elliot/tools/SDK/cangjie
+2025-08-08 02:10:44 1754590244874:[Info]cjcPath is /home/elliot/tools/SDK/cangjie/bin/
+2025-08-08 02:10:44 1754590244889:[Warning]#### execute SetSourceCodeImportStatus start ####
+2025-08-08 02:10:44 1754590244889:[Warning]#### execute SetSourceCodeImportStatus end ####
+2025-08-08 02:10:44 1754590244889:[Warning]#### execute PerformParse start ####
+2025-08-08 02:10:44 1754590244889:[Warning]#### execute PerformParse end ####
+2025-08-08 02:10:44 1754590244889:[Warning]#### execute PerformConditionCompile start ####
+2025-08-08 02:10:44 1754590244889:[Warning]#### execute PerformConditionCompile end ####
+2025-08-08 02:10:44 1754590244889:[Warning]#### execute SetSourceCodeImportStatus start ####
+2025-08-08 02:10:44 1754590244889:[Warning]#### execute SetSourceCodeImportStatus end ####
+2025-08-08 02:10:45 1754590245012:[Info][Thread 126271534949248] All tasks are completed in full compilation 
+
+2025-08-08 02:10:45 1754590245013:[Info]send message body:{"id":1,"jsonrpc":"2.0","result":{"capabilities":{"breakpointsProvider":true,"callHierarchyProvider":true,"codeLensProvider":true,"completionProvider":{"resolveProvider":false,"triggerCharacters":[".","`"]},"definitionProvider":true,"documentHighlightProvider":true,"documentLinkProvider":{"resolveProvider":true},"documentSymbolProvider":true,"hoverProvider":true,"referencesProvider":true,"renameProvider":{"prepareProvider":true},"semaHighlightProvider":true,"semanticTokensProvider":{"full":{"delta":true},"legend":{"tokenModifiers":["declaration","documentation","static","abstract","deprecated","async","readonly"],"tokenTypes":["comment","keyword","string","number","regexp","operator","namespace","type","struct","class","interface","enum","typeParameter","function","member","property","macro","variable","parameter","label"]},"range":false},"signatureHelpProvider":{"triggerCharacters":["(",","]},"textDocumentSync":2,"typeHierarchyProvider":true,"workspaceSymbolProvider":true},"serverInfo":{"name":"Cangjie language server","version":"1.0"}}}
+2025-08-08 02:10:45 1754590245013:[Info]receive message body:{"params":{},"method":"initialized","jsonrpc":"2.0"}
+2025-08-08 02:10:45 1754590245013:[Info]receive message body:{"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj","version":0,"text":"\n","languageId":"cangjie"}},"method":"textDocument/didOpen","jsonrpc":"2.0"}
+2025-08-08 02:10:45 1754590245013:[Warning]Failed to decode request or request not meet requirement, method:textDocument/didOpen
+2025-08-08 02:10:45 1754590245014:[Info]receive message body:{"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}},"method":"textDocument/semanticTokens/full","id":2,"jsonrpc":"2.0"}
+2025-08-08 02:10:45 1754590245014:[Log]ArkLanguageServer::OnSemanticTokens in.
+2025-08-08 02:10:45 1754590245014:[Warning]No didopen was received before OnSemanticTokens, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:45 1754590245014:[Info]send message body:{"id":2,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:45 1754590245014:[Info]receive message body:{"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}},"method":"textDocument/documentSymbol","id":3,"jsonrpc":"2.0"}
+2025-08-08 02:10:45 1754590245014:[Log]ArkLanguageServer::OnDocumentSymbol in
+2025-08-08 02:10:45 1754590245014:[Log]ArkLanguageServer::GetDiagsOfCurFile in, file:/home/elliot/.config/nvim/lua/plugins/foo.cj.
+2025-08-08 02:10:45 1754590245014:[Info]file:/home/elliot/.config/nvim/lua/plugins/foo.cj, diagnostic is null.
+2025-08-08 02:10:45 1754590245014:[Log]ArkLanguageServer::ReadyForDiagnostics in, file:/home/elliot/.config/nvim/lua/plugins/foo.cj.
+2025-08-08 02:10:45 1754590245014:[Log]ArkLanguageServer::PublishDiagnostics in, file:file:///home/elliot/.config/nvim/lua/plugins/foo.cj.
+2025-08-08 02:10:45 1754590245014:[Info]send message body:{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}}
+2025-08-08 02:10:45 1754590245014:[Info]send message body:{"id":3,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:45 1754590245616:[Info]receive message body:{"params":{"position":{"character":0,"line":0},"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}},"method":"textDocument/documentHighlight","id":4,"jsonrpc":"2.0"}
+2025-08-08 02:10:45 1754590245616:[Log]ArkLanguageServer::OnDocumentHighlight in.
+2025-08-08 02:10:45 1754590245616:[Warning]No didopen was received before OnDocumentHighlight, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:45 1754590245616:[Info]send message body:{"id":4,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:45 1754590245700:[Info]receive message body:{"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj","version":4},"contentChanges":[{"range":{"start":{"character":0,"line":0},"end":{"character":0,"line":0}},"rangeLength":0,"text":"m"}]},"method":"textDocument/didChange","jsonrpc":"2.0"}
+2025-08-08 02:10:45 1754590245700:[Log]ArkLanguageServer::OnDocumentDidChange in
+2025-08-08 02:10:45 1754590245700:[Warning]file:/home/elliot/.config/nvim/lua/plugins/foo.cj not exist
+2025-08-08 02:10:45 1754590245700:[Info]receive message body:{"params":{"position":{"character":1,"line":0},"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"},"context":{"triggerKind":1}},"method":"textDocument/completion","id":5,"jsonrpc":"2.0"}
+2025-08-08 02:10:45 1754590245700:[Log]ArkLanguageServer::OnCompletion in.
+2025-08-08 02:10:45 1754590245700:[Warning]No didopen was received before completion, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:45 1754590245700:[Info]send message body:{"id":5,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:45 1754590245893:[Info]receive message body:{"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}},"method":"textDocument/semanticTokens/full","id":6,"jsonrpc":"2.0"}
+2025-08-08 02:10:45 1754590245894:[Log]ArkLanguageServer::OnSemanticTokens in.
+2025-08-08 02:10:45 1754590245894:[Warning]No didopen was received before OnSemanticTokens, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:45 1754590245894:[Info]send message body:{"id":6,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:45 1754590245894:[Info]receive message body:{"params":{"position":{"character":1,"line":0},"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}},"method":"textDocument/documentHighlight","id":7,"jsonrpc":"2.0"}
+2025-08-08 02:10:45 1754590245894:[Log]ArkLanguageServer::OnDocumentHighlight in.
+2025-08-08 02:10:45 1754590245894:[Warning]No didopen was received before OnDocumentHighlight, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:45 1754590245894:[Info]send message body:{"id":7,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:46 1754590246128:[Info]receive message body:{"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj","version":5},"contentChanges":[{"range":{"start":{"character":1,"line":0},"end":{"character":1,"line":0}},"rangeLength":0,"text":"a"}]},"method":"textDocument/didChange","jsonrpc":"2.0"}
+2025-08-08 02:10:46 1754590246128:[Log]ArkLanguageServer::OnDocumentDidChange in
+2025-08-08 02:10:46 1754590246128:[Warning]file:/home/elliot/.config/nvim/lua/plugins/foo.cj not exist
+2025-08-08 02:10:46 1754590246130:[Info]receive message body:{"params":{"position":{"character":2,"line":0},"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"},"context":{"triggerKind":1}},"method":"textDocument/completion","id":8,"jsonrpc":"2.0"}
+2025-08-08 02:10:46 1754590246130:[Log]ArkLanguageServer::OnCompletion in.
+2025-08-08 02:10:46 1754590246130:[Warning]No didopen was received before completion, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:46 1754590246130:[Info]send message body:{"id":8,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:46 1754590246327:[Info]receive message body:{"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}},"method":"textDocument/semanticTokens/full","id":9,"jsonrpc":"2.0"}
+2025-08-08 02:10:46 1754590246328:[Log]ArkLanguageServer::OnSemanticTokens in.
+2025-08-08 02:10:46 1754590246328:[Warning]No didopen was received before OnSemanticTokens, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:46 1754590246328:[Info]send message body:{"id":9,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:46 1754590246328:[Info]receive message body:{"params":{"position":{"character":2,"line":0},"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}},"method":"textDocument/documentHighlight","id":10,"jsonrpc":"2.0"}
+2025-08-08 02:10:46 1754590246328:[Log]ArkLanguageServer::OnDocumentHighlight in.
+2025-08-08 02:10:46 1754590246328:[Warning]No didopen was received before OnDocumentHighlight, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:46 1754590246328:[Info]send message body:{"id":10,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:46 1754590246328:[Info]receive message body:{"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj","version":6},"contentChanges":[{"range":{"start":{"character":2,"line":0},"end":{"character":2,"line":0}},"rangeLength":0,"text":"i"}]},"method":"textDocument/didChange","jsonrpc":"2.0"}
+2025-08-08 02:10:46 1754590246328:[Log]ArkLanguageServer::OnDocumentDidChange in
+2025-08-08 02:10:46 1754590246328:[Warning]file:/home/elliot/.config/nvim/lua/plugins/foo.cj not exist
+2025-08-08 02:10:46 1754590246329:[Info]receive message body:{"params":{"position":{"character":3,"line":0},"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"},"context":{"triggerKind":1}},"method":"textDocument/completion","id":11,"jsonrpc":"2.0"}
+2025-08-08 02:10:46 1754590246329:[Log]ArkLanguageServer::OnCompletion in.
+2025-08-08 02:10:46 1754590246329:[Warning]No didopen was received before completion, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:46 1754590246329:[Info]send message body:{"id":11,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:46 1754590246401:[Info]receive message body:{"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj","version":7},"contentChanges":[{"range":{"start":{"character":3,"line":0},"end":{"character":3,"line":0}},"rangeLength":0,"text":"n"}]},"method":"textDocument/didChange","jsonrpc":"2.0"}
+2025-08-08 02:10:46 1754590246401:[Log]ArkLanguageServer::OnDocumentDidChange in
+2025-08-08 02:10:46 1754590246401:[Warning]file:/home/elliot/.config/nvim/lua/plugins/foo.cj not exist
+2025-08-08 02:10:46 1754590246401:[Info]receive message body:{"params":{"position":{"character":4,"line":0},"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"},"context":{"triggerKind":1}},"method":"textDocument/completion","id":12,"jsonrpc":"2.0"}
+2025-08-08 02:10:46 1754590246401:[Log]ArkLanguageServer::OnCompletion in.
+2025-08-08 02:10:46 1754590246401:[Warning]No didopen was received before completion, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:46 1754590246402:[Info]send message body:{"id":12,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:46 1754590246600:[Info]receive message body:{"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}},"method":"textDocument/semanticTokens/full","id":13,"jsonrpc":"2.0"}
+2025-08-08 02:10:46 1754590246600:[Log]ArkLanguageServer::OnSemanticTokens in.
+2025-08-08 02:10:46 1754590246600:[Warning]No didopen was received before OnSemanticTokens, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:46 1754590246600:[Info]send message body:{"id":13,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:46 1754590246600:[Info]receive message body:{"params":{"position":{"character":4,"line":0},"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}},"method":"textDocument/documentHighlight","id":14,"jsonrpc":"2.0"}
+2025-08-08 02:10:46 1754590246600:[Log]ArkLanguageServer::OnDocumentHighlight in.
+2025-08-08 02:10:46 1754590246600:[Warning]No didopen was received before OnDocumentHighlight, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:46 1754590246600:[Info]send message body:{"id":14,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:46 1754590246676:[Info]receive message body:{"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj","version":8},"contentChanges":[{"range":{"start":{"character":4,"line":0},"end":{"character":4,"line":0}},"rangeLength":0,"text":"("}]},"method":"textDocument/didChange","jsonrpc":"2.0"}
+2025-08-08 02:10:46 1754590246676:[Log]ArkLanguageServer::OnDocumentDidChange in
+2025-08-08 02:10:46 1754590246676:[Warning]file:/home/elliot/.config/nvim/lua/plugins/foo.cj not exist
+2025-08-08 02:10:46 1754590246729:[Info]receive message body:{"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj","version":9},"contentChanges":[{"range":{"start":{"character":5,"line":0},"end":{"character":5,"line":0}},"rangeLength":0,"text":")"}]},"method":"textDocument/didChange","jsonrpc":"2.0"}
+2025-08-08 02:10:46 1754590246729:[Log]ArkLanguageServer::OnDocumentDidChange in
+2025-08-08 02:10:46 1754590246729:[Warning]file:/home/elliot/.config/nvim/lua/plugins/foo.cj not exist
+2025-08-08 02:10:46 1754590246729:[Info]receive message body:{"params":{"position":{"character":5,"line":0},"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}},"method":"textDocument/signatureHelp","id":15,"jsonrpc":"2.0"}
+2025-08-08 02:10:46 1754590246729:[Log]ArkLanguageServer::OnSignatureHelp in.
+2025-08-08 02:10:46 1754590246729:[Warning]No didOpen was received before OnSignatureHelp, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:46 1754590246729:[Info]send message body:{"id":15,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:46 1754590246875:[Info]receive message body:{"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}},"method":"textDocument/semanticTokens/full","id":16,"jsonrpc":"2.0"}
+2025-08-08 02:10:46 1754590246876:[Log]ArkLanguageServer::OnSemanticTokens in.
+2025-08-08 02:10:46 1754590246876:[Warning]No didopen was received before OnSemanticTokens, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:46 1754590246876:[Info]send message body:{"id":16,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:46 1754590246876:[Info]receive message body:{"params":{"position":{"character":5,"line":0},"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}},"method":"textDocument/documentHighlight","id":17,"jsonrpc":"2.0"}
+2025-08-08 02:10:46 1754590246876:[Log]ArkLanguageServer::OnDocumentHighlight in.
+2025-08-08 02:10:46 1754590246876:[Warning]No didopen was received before OnDocumentHighlight, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:46 1754590246876:[Info]send message body:{"id":17,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:47 1754590247284:[Info]receive message body:{"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}},"method":"textDocument/semanticTokens/full","id":18,"jsonrpc":"2.0"}
+2025-08-08 02:10:47 1754590247285:[Log]ArkLanguageServer::OnSemanticTokens in.
+2025-08-08 02:10:47 1754590247285:[Warning]No didopen was received before OnSemanticTokens, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:47 1754590247285:[Info]send message body:{"id":18,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:47 1754590247316:[Info]receive message body:{"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}},"method":"textDocument/documentSymbol","id":19,"jsonrpc":"2.0"}
+2025-08-08 02:10:47 1754590247316:[Log]ArkLanguageServer::OnDocumentSymbol in
+2025-08-08 02:10:47 1754590247316:[Log]ArkLanguageServer::GetDiagsOfCurFile in, file:/home/elliot/.config/nvim/lua/plugins/foo.cj.
+2025-08-08 02:10:47 1754590247316:[Info]file:/home/elliot/.config/nvim/lua/plugins/foo.cj, diagnostic is null.
+2025-08-08 02:10:47 1754590247316:[Log]ArkLanguageServer::ReadyForDiagnostics in, file:/home/elliot/.config/nvim/lua/plugins/foo.cj.
+2025-08-08 02:10:47 1754590247316:[Log]ArkLanguageServer::PublishDiagnostics in, file:file:///home/elliot/.config/nvim/lua/plugins/foo.cj.
+2025-08-08 02:10:47 1754590247317:[Info]send message body:{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}}
+2025-08-08 02:10:47 1754590247317:[Info]send message body:{"id":19,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:47 1754590247689:[Info]receive message body:{"params":{"position":{"character":4,"line":0},"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}},"method":"textDocument/documentHighlight","id":20,"jsonrpc":"2.0"}
+2025-08-08 02:10:47 1754590247690:[Log]ArkLanguageServer::OnDocumentHighlight in.
+2025-08-08 02:10:47 1754590247690:[Warning]No didopen was received before OnDocumentHighlight, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:47 1754590247690:[Info]send message body:{"id":20,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:47 1754590247769:[Info]receive message body:{"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}},"method":"textDocument/didSave","jsonrpc":"2.0"}
+2025-08-08 02:10:47 1754590247769:[Log]The file foo.cj has been saved successfully
+2025-08-08 02:10:47 1754590247945:[Info]receive message body:{"params":{"position":{"character":4,"line":0},"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}},"method":"textDocument/documentHighlight","id":21,"jsonrpc":"2.0"}
+2025-08-08 02:10:47 1754590247945:[Log]ArkLanguageServer::OnDocumentHighlight in.
+2025-08-08 02:10:47 1754590247945:[Warning]No didopen was received before OnDocumentHighlight, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:47 1754590247945:[Info]send message body:{"id":21,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:48 1754590248209:[Info]receive message body:{"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}},"method":"textDocument/documentSymbol","id":22,"jsonrpc":"2.0"}
+2025-08-08 02:10:48 1754590248210:[Log]ArkLanguageServer::OnDocumentSymbol in
+2025-08-08 02:10:48 1754590248210:[Log]ArkLanguageServer::GetDiagsOfCurFile in, file:/home/elliot/.config/nvim/lua/plugins/foo.cj.
+2025-08-08 02:10:48 1754590248210:[Info]file:/home/elliot/.config/nvim/lua/plugins/foo.cj, diagnostic is null.
+2025-08-08 02:10:48 1754590248210:[Log]ArkLanguageServer::ReadyForDiagnostics in, file:/home/elliot/.config/nvim/lua/plugins/foo.cj.
+2025-08-08 02:10:48 1754590248210:[Log]ArkLanguageServer::PublishDiagnostics in, file:file:///home/elliot/.config/nvim/lua/plugins/foo.cj.
+2025-08-08 02:10:48 1754590248210:[Info]send message body:{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}}
+2025-08-08 02:10:48 1754590248210:[Info]send message body:{"id":22,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:48 1754590248409:[Info]receive message body:{"params":{"position":{"character":5,"line":0},"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}},"method":"textDocument/documentHighlight","id":23,"jsonrpc":"2.0"}
+2025-08-08 02:10:48 1754590248409:[Log]ArkLanguageServer::OnDocumentHighlight in.
+2025-08-08 02:10:48 1754590248409:[Warning]No didopen was received before OnDocumentHighlight, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:48 1754590248410:[Info]send message body:{"id":23,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:48 1754590248810:[Info]receive message body:{"params":{"position":{"character":6,"line":0},"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}},"method":"textDocument/documentHighlight","id":24,"jsonrpc":"2.0"}
+2025-08-08 02:10:48 1754590248811:[Log]ArkLanguageServer::OnDocumentHighlight in.
+2025-08-08 02:10:48 1754590248811:[Warning]No didopen was received before OnDocumentHighlight, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:48 1754590248811:[Info]send message body:{"id":24,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:49 1754590249090:[Info]receive message body:{"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj","version":11},"contentChanges":[{"range":{"start":{"character":6,"line":0},"end":{"character":6,"line":0}},"rangeLength":0,"text":" "}]},"method":"textDocument/didChange","jsonrpc":"2.0"}
+2025-08-08 02:10:49 1754590249090:[Log]ArkLanguageServer::OnDocumentDidChange in
+2025-08-08 02:10:49 1754590249090:[Warning]file:/home/elliot/.config/nvim/lua/plugins/foo.cj not exist
+2025-08-08 02:10:49 1754590249245:[Info]receive message body:{"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj","version":12},"contentChanges":[{"range":{"start":{"character":7,"line":0},"end":{"character":7,"line":0}},"rangeLength":0,"text":"{"}]},"method":"textDocument/didChange","jsonrpc":"2.0"}
+2025-08-08 02:10:49 1754590249245:[Log]ArkLanguageServer::OnDocumentDidChange in
+2025-08-08 02:10:49 1754590249245:[Warning]file:/home/elliot/.config/nvim/lua/plugins/foo.cj not exist
+2025-08-08 02:10:49 1754590249394:[Info]receive message body:{"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj","version":13},"contentChanges":[{"range":{"start":{"character":8,"line":0},"end":{"character":8,"line":0}},"rangeLength":0,"text":"}"}]},"method":"textDocument/didChange","jsonrpc":"2.0"}
+2025-08-08 02:10:49 1754590249394:[Log]ArkLanguageServer::OnDocumentDidChange in
+2025-08-08 02:10:49 1754590249394:[Warning]file:/home/elliot/.config/nvim/lua/plugins/foo.cj not exist
+2025-08-08 02:10:49 1754590249445:[Info]receive message body:{"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}},"method":"textDocument/semanticTokens/full","id":25,"jsonrpc":"2.0"}
+2025-08-08 02:10:49 1754590249445:[Log]ArkLanguageServer::OnSemanticTokens in.
+2025-08-08 02:10:49 1754590249445:[Warning]No didopen was received before OnSemanticTokens, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:49 1754590249445:[Info]send message body:{"id":25,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:49 1754590249445:[Info]receive message body:{"params":{"position":{"character":8,"line":0},"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}},"method":"textDocument/documentHighlight","id":26,"jsonrpc":"2.0"}
+2025-08-08 02:10:49 1754590249445:[Log]ArkLanguageServer::OnDocumentHighlight in.
+2025-08-08 02:10:49 1754590249445:[Warning]No didopen was received before OnDocumentHighlight, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:49 1754590249446:[Info]send message body:{"id":26,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:49 1754590249675:[Info]receive message body:{"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj","version":14},"contentChanges":[{"range":{"start":{"character":8,"line":0},"end":{"character":9,"line":0}},"rangeLength":1,"text":"\n  }"}]},"method":"textDocument/didChange","jsonrpc":"2.0"}
+2025-08-08 02:10:49 1754590249675:[Log]ArkLanguageServer::OnDocumentDidChange in
+2025-08-08 02:10:49 1754590249675:[Warning]file:/home/elliot/.config/nvim/lua/plugins/foo.cj not exist
+2025-08-08 02:10:49 1754590249676:[Info]receive message body:{"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj","version":15},"contentChanges":[{"range":{"start":{"character":8,"line":0},"end":{"character":0,"line":1}},"rangeLength":1,"text":"\n    \n"}]},"method":"textDocument/didChange","jsonrpc":"2.0"}
+2025-08-08 02:10:49 1754590249676:[Log]ArkLanguageServer::OnDocumentDidChange in
+2025-08-08 02:10:49 1754590249676:[Warning]file:/home/elliot/.config/nvim/lua/plugins/foo.cj not exist
+2025-08-08 02:10:49 1754590249676:[Info]receive message body:{"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}},"method":"textDocument/documentSymbol","id":27,"jsonrpc":"2.0"}
+2025-08-08 02:10:49 1754590249676:[Log]ArkLanguageServer::OnDocumentSymbol in
+2025-08-08 02:10:49 1754590249676:[Log]ArkLanguageServer::GetDiagsOfCurFile in, file:/home/elliot/.config/nvim/lua/plugins/foo.cj.
+2025-08-08 02:10:49 1754590249676:[Info]file:/home/elliot/.config/nvim/lua/plugins/foo.cj, diagnostic is null.
+2025-08-08 02:10:49 1754590249676:[Log]ArkLanguageServer::ReadyForDiagnostics in, file:/home/elliot/.config/nvim/lua/plugins/foo.cj.
+2025-08-08 02:10:49 1754590249676:[Log]ArkLanguageServer::PublishDiagnostics in, file:file:///home/elliot/.config/nvim/lua/plugins/foo.cj.
+2025-08-08 02:10:49 1754590249676:[Info]send message body:{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}}
+2025-08-08 02:10:49 1754590249676:[Info]send message body:{"id":27,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:49 1754590249875:[Info]receive message body:{"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}},"method":"textDocument/semanticTokens/full","id":28,"jsonrpc":"2.0"}
+2025-08-08 02:10:49 1754590249876:[Log]ArkLanguageServer::OnSemanticTokens in.
+2025-08-08 02:10:49 1754590249876:[Warning]No didopen was received before OnSemanticTokens, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:49 1754590249876:[Info]send message body:{"id":28,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:49 1754590249876:[Info]receive message body:{"params":{"position":{"character":4,"line":1},"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}},"method":"textDocument/documentHighlight","id":29,"jsonrpc":"2.0"}
+2025-08-08 02:10:49 1754590249876:[Log]ArkLanguageServer::OnDocumentHighlight in.
+2025-08-08 02:10:49 1754590249876:[Warning]No didopen was received before OnDocumentHighlight, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:49 1754590249876:[Info]send message body:{"id":29,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:50 1754590250112:[Info]receive message body:{"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj","version":16},"contentChanges":[{"range":{"start":{"character":3,"line":1},"end":{"character":4,"line":1}},"rangeLength":1,"text":""}]},"method":"textDocument/didChange","jsonrpc":"2.0"}
+2025-08-08 02:10:50 1754590250112:[Log]ArkLanguageServer::OnDocumentDidChange in
+2025-08-08 02:10:50 1754590250112:[Warning]file:/home/elliot/.config/nvim/lua/plugins/foo.cj not exist
+2025-08-08 02:10:50 1754590250113:[Info]receive message body:{"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj","version":19},"contentChanges":[{"range":{"start":{"character":2,"line":1},"end":{"character":3,"line":1}},"rangeLength":1,"text":""},{"range":{"start":{"character":1,"line":1},"end":{"character":2,"line":1}},"rangeLength":1,"text":""},{"range":{"start":{"character":0,"line":1},"end":{"character":1,"line":1}},"rangeLength":1,"text":""}]},"method":"textDocument/didChange","jsonrpc":"2.0"}
+2025-08-08 02:10:50 1754590250113:[Log]ArkLanguageServer::OnDocumentDidChange in
+2025-08-08 02:10:50 1754590250113:[Warning]file:/home/elliot/.config/nvim/lua/plugins/foo.cj not exist
+2025-08-08 02:10:50 1754590250113:[Info]receive message body:{"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}},"method":"textDocument/semanticTokens/full","id":30,"jsonrpc":"2.0"}
+2025-08-08 02:10:50 1754590250113:[Log]ArkLanguageServer::OnSemanticTokens in.
+2025-08-08 02:10:50 1754590250113:[Warning]No didopen was received before OnSemanticTokens, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:50 1754590250114:[Info]send message body:{"id":30,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:50 1754590250117:[Info]receive message body:{"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}},"method":"textDocument/documentSymbol","id":31,"jsonrpc":"2.0"}
+2025-08-08 02:10:50 1754590250117:[Log]ArkLanguageServer::OnDocumentSymbol in
+2025-08-08 02:10:50 1754590250117:[Log]ArkLanguageServer::GetDiagsOfCurFile in, file:/home/elliot/.config/nvim/lua/plugins/foo.cj.
+2025-08-08 02:10:50 1754590250117:[Info]file:/home/elliot/.config/nvim/lua/plugins/foo.cj, diagnostic is null.
+2025-08-08 02:10:50 1754590250117:[Log]ArkLanguageServer::ReadyForDiagnostics in, file:/home/elliot/.config/nvim/lua/plugins/foo.cj.
+2025-08-08 02:10:50 1754590250117:[Log]ArkLanguageServer::PublishDiagnostics in, file:file:///home/elliot/.config/nvim/lua/plugins/foo.cj.
+2025-08-08 02:10:50 1754590250118:[Info]send message body:{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}}
+2025-08-08 02:10:50 1754590250118:[Info]send message body:{"id":31,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:50 1754590250314:[Info]receive message body:{"params":{"position":{"character":0,"line":1},"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}},"method":"textDocument/documentHighlight","id":32,"jsonrpc":"2.0"}
+2025-08-08 02:10:50 1754590250314:[Log]ArkLanguageServer::OnDocumentHighlight in.
+2025-08-08 02:10:50 1754590250314:[Warning]No didopen was received before OnDocumentHighlight, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:50 1754590250314:[Info]send message body:{"id":32,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:50 1754590250513:[Info]receive message body:{"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj","version":20},"contentChanges":[{"range":{"start":{"character":0,"line":1},"end":{"character":0,"line":1}},"rangeLength":0,"text":"s"}]},"method":"textDocument/didChange","jsonrpc":"2.0"}
+2025-08-08 02:10:50 1754590250513:[Log]ArkLanguageServer::OnDocumentDidChange in
+2025-08-08 02:10:50 1754590250514:[Warning]file:/home/elliot/.config/nvim/lua/plugins/foo.cj not exist
+2025-08-08 02:10:50 1754590250515:[Info]receive message body:{"params":{"position":{"character":1,"line":1},"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"},"context":{"triggerKind":1}},"method":"textDocument/completion","id":33,"jsonrpc":"2.0"}
+2025-08-08 02:10:50 1754590250515:[Log]ArkLanguageServer::OnCompletion in.
+2025-08-08 02:10:50 1754590250515:[Warning]No didopen was received before completion, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:50 1754590250515:[Info]send message body:{"id":33,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:50 1754590250542:[Info]receive message body:{"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj","version":21},"contentChanges":[{"range":{"start":{"character":1,"line":1},"end":{"character":1,"line":1}},"rangeLength":0,"text":"d"}]},"method":"textDocument/didChange","jsonrpc":"2.0"}
+2025-08-08 02:10:50 1754590250542:[Log]ArkLanguageServer::OnDocumentDidChange in
+2025-08-08 02:10:50 1754590250542:[Warning]file:/home/elliot/.config/nvim/lua/plugins/foo.cj not exist
+2025-08-08 02:10:50 1754590250542:[Info]receive message body:{"params":{"position":{"character":2,"line":1},"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"},"context":{"triggerKind":1}},"method":"textDocument/completion","id":34,"jsonrpc":"2.0"}
+2025-08-08 02:10:50 1754590250542:[Log]ArkLanguageServer::OnCompletion in.
+2025-08-08 02:10:50 1754590250542:[Warning]No didopen was received before completion, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:50 1754590250542:[Info]send message body:{"id":34,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:50 1754590250619:[Info]receive message body:{"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj","version":22},"contentChanges":[{"range":{"start":{"character":2,"line":1},"end":{"character":2,"line":1}},"rangeLength":0,"text":"f"}]},"method":"textDocument/didChange","jsonrpc":"2.0"}
+2025-08-08 02:10:50 1754590250619:[Log]ArkLanguageServer::OnDocumentDidChange in
+2025-08-08 02:10:50 1754590250619:[Warning]file:/home/elliot/.config/nvim/lua/plugins/foo.cj not exist
+2025-08-08 02:10:50 1754590250619:[Info]receive message body:{"params":{"position":{"character":3,"line":1},"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"},"context":{"triggerKind":1}},"method":"textDocument/completion","id":35,"jsonrpc":"2.0"}
+2025-08-08 02:10:50 1754590250619:[Log]ArkLanguageServer::OnCompletion in.
+2025-08-08 02:10:50 1754590250619:[Warning]No didopen was received before completion, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:50 1754590250619:[Info]send message body:{"id":35,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:50 1754590250819:[Info]receive message body:{"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}},"method":"textDocument/semanticTokens/full","id":36,"jsonrpc":"2.0"}
+2025-08-08 02:10:50 1754590250819:[Log]ArkLanguageServer::OnSemanticTokens in.
+2025-08-08 02:10:50 1754590250819:[Warning]No didopen was received before OnSemanticTokens, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:50 1754590250819:[Info]send message body:{"id":36,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:50 1754590250819:[Info]receive message body:{"params":{"position":{"character":3,"line":1},"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}},"method":"textDocument/documentHighlight","id":37,"jsonrpc":"2.0"}
+2025-08-08 02:10:50 1754590250819:[Log]ArkLanguageServer::OnDocumentHighlight in.
+2025-08-08 02:10:50 1754590250819:[Warning]No didopen was received before OnDocumentHighlight, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:50 1754590250819:[Info]send message body:{"id":37,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:50 1754590250819:[Info]receive message body:{"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj","version":23},"contentChanges":[{"range":{"start":{"character":3,"line":1},"end":{"character":3,"line":1}},"rangeLength":0,"text":"a"}]},"method":"textDocument/didChange","jsonrpc":"2.0"}
+2025-08-08 02:10:50 1754590250820:[Log]ArkLanguageServer::OnDocumentDidChange in
+2025-08-08 02:10:50 1754590250820:[Warning]file:/home/elliot/.config/nvim/lua/plugins/foo.cj not exist
+2025-08-08 02:10:50 1754590250820:[Info]receive message body:{"params":{"position":{"character":4,"line":1},"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"},"context":{"triggerKind":1}},"method":"textDocument/completion","id":38,"jsonrpc":"2.0"}
+2025-08-08 02:10:50 1754590250820:[Log]ArkLanguageServer::OnCompletion in.
+2025-08-08 02:10:50 1754590250820:[Warning]No didopen was received before completion, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:50 1754590250820:[Info]send message body:{"id":38,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:50 1754590250821:[Info]receive message body:{"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj","version":24},"contentChanges":[{"range":{"start":{"character":4,"line":1},"end":{"character":4,"line":1}},"rangeLength":0,"text":"s"}]},"method":"textDocument/didChange","jsonrpc":"2.0"}
+2025-08-08 02:10:50 1754590250821:[Log]ArkLanguageServer::OnDocumentDidChange in
+2025-08-08 02:10:50 1754590250821:[Warning]file:/home/elliot/.config/nvim/lua/plugins/foo.cj not exist
+2025-08-08 02:10:50 1754590250821:[Info]receive message body:{"params":{"position":{"character":5,"line":1},"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"},"context":{"triggerKind":1}},"method":"textDocument/completion","id":39,"jsonrpc":"2.0"}
+2025-08-08 02:10:50 1754590250821:[Log]ArkLanguageServer::OnCompletion in.
+2025-08-08 02:10:50 1754590250821:[Warning]No didopen was received before completion, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:50 1754590250821:[Info]send message body:{"id":39,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:50 1754590250849:[Info]receive message body:{"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj","version":25},"contentChanges":[{"range":{"start":{"character":5,"line":1},"end":{"character":5,"line":1}},"rangeLength":0,"text":"d"}]},"method":"textDocument/didChange","jsonrpc":"2.0"}
+2025-08-08 02:10:50 1754590250849:[Log]ArkLanguageServer::OnDocumentDidChange in
+2025-08-08 02:10:50 1754590250849:[Warning]file:/home/elliot/.config/nvim/lua/plugins/foo.cj not exist
+2025-08-08 02:10:50 1754590250849:[Info]receive message body:{"params":{"position":{"character":6,"line":1},"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"},"context":{"triggerKind":1}},"method":"textDocument/completion","id":40,"jsonrpc":"2.0"}
+2025-08-08 02:10:50 1754590250849:[Log]ArkLanguageServer::OnCompletion in.
+2025-08-08 02:10:50 1754590250849:[Warning]No didopen was received before completion, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:50 1754590250849:[Info]send message body:{"id":40,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:50 1754590250901:[Info]receive message body:{"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj","version":26},"contentChanges":[{"range":{"start":{"character":6,"line":1},"end":{"character":6,"line":1}},"rangeLength":0,"text":"f"}]},"method":"textDocument/didChange","jsonrpc":"2.0"}
+2025-08-08 02:10:50 1754590250901:[Log]ArkLanguageServer::OnDocumentDidChange in
+2025-08-08 02:10:50 1754590250901:[Warning]file:/home/elliot/.config/nvim/lua/plugins/foo.cj not exist
+2025-08-08 02:10:50 1754590250901:[Info]receive message body:{"params":{"position":{"character":7,"line":1},"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"},"context":{"triggerKind":1}},"method":"textDocument/completion","id":41,"jsonrpc":"2.0"}
+2025-08-08 02:10:50 1754590250901:[Log]ArkLanguageServer::OnCompletion in.
+2025-08-08 02:10:50 1754590250901:[Warning]No didopen was received before completion, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:50 1754590250901:[Info]send message body:{"id":41,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:51 1754590251100:[Info]receive message body:{"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}},"method":"textDocument/semanticTokens/full","id":42,"jsonrpc":"2.0"}
+2025-08-08 02:10:51 1754590251101:[Log]ArkLanguageServer::OnSemanticTokens in.
+2025-08-08 02:10:51 1754590251101:[Warning]No didopen was received before OnSemanticTokens, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:51 1754590251101:[Info]send message body:{"id":42,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:51 1754590251101:[Info]receive message body:{"params":{"position":{"character":7,"line":1},"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}},"method":"textDocument/documentHighlight","id":43,"jsonrpc":"2.0"}
+2025-08-08 02:10:51 1754590251101:[Log]ArkLanguageServer::OnDocumentHighlight in.
+2025-08-08 02:10:51 1754590251101:[Warning]No didopen was received before OnDocumentHighlight, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:51 1754590251101:[Info]send message body:{"id":43,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:51 1754590251294:[Info]receive message body:{"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}},"method":"textDocument/semanticTokens/full","id":44,"jsonrpc":"2.0"}
+2025-08-08 02:10:51 1754590251295:[Log]ArkLanguageServer::OnSemanticTokens in.
+2025-08-08 02:10:51 1754590251295:[Warning]No didopen was received before OnSemanticTokens, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:51 1754590251295:[Info]send message body:{"id":44,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:51 1754590251296:[Info]receive message body:{"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}},"method":"textDocument/documentSymbol","id":45,"jsonrpc":"2.0"}
+2025-08-08 02:10:51 1754590251297:[Log]ArkLanguageServer::OnDocumentSymbol in
+2025-08-08 02:10:51 1754590251297:[Log]ArkLanguageServer::GetDiagsOfCurFile in, file:/home/elliot/.config/nvim/lua/plugins/foo.cj.
+2025-08-08 02:10:51 1754590251297:[Info]file:/home/elliot/.config/nvim/lua/plugins/foo.cj, diagnostic is null.
+2025-08-08 02:10:51 1754590251297:[Log]ArkLanguageServer::ReadyForDiagnostics in, file:/home/elliot/.config/nvim/lua/plugins/foo.cj.
+2025-08-08 02:10:51 1754590251297:[Log]ArkLanguageServer::PublishDiagnostics in, file:file:///home/elliot/.config/nvim/lua/plugins/foo.cj.
+2025-08-08 02:10:51 1754590251297:[Info]send message body:{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}}
+2025-08-08 02:10:51 1754590251297:[Info]send message body:{"id":45,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:51 1754590251495:[Info]receive message body:{"params":{"position":{"character":6,"line":1},"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}},"method":"textDocument/documentHighlight","id":46,"jsonrpc":"2.0"}
+2025-08-08 02:10:51 1754590251496:[Log]ArkLanguageServer::OnDocumentHighlight in.
+2025-08-08 02:10:51 1754590251496:[Warning]No didopen was received before OnDocumentHighlight, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:51 1754590251496:[Info]send message body:{"id":46,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:52 1754590252088:[Info]receive message body:{"params":{"position":{"character":6,"line":1},"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}},"method":"textDocument/documentHighlight","id":47,"jsonrpc":"2.0"}
+2025-08-08 02:10:52 1754590252088:[Log]ArkLanguageServer::OnDocumentHighlight in.
+2025-08-08 02:10:52 1754590252088:[Warning]No didopen was received before OnDocumentHighlight, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:52 1754590252088:[Info]send message body:{"id":47,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:52 1754590252245:[Info]receive message body:{"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}},"method":"textDocument/didSave","jsonrpc":"2.0"}
+2025-08-08 02:10:52 1754590252245:[Log]The file foo.cj has been saved successfully
+2025-08-08 02:10:52 1754590252416:[Info]receive message body:{"params":{"position":{"character":6,"line":1},"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}},"method":"textDocument/documentHighlight","id":48,"jsonrpc":"2.0"}
+2025-08-08 02:10:52 1754590252416:[Log]ArkLanguageServer::OnDocumentHighlight in.
+2025-08-08 02:10:52 1754590252416:[Warning]No didopen was received before OnDocumentHighlight, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:52 1754590252416:[Info]send message body:{"id":48,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:53 1754590253100:[Info]receive message body:{"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj","version":28},"contentChanges":[{"range":{"start":{"character":0,"line":1},"end":{"character":0,"line":2}},"rangeLength":8,"text":""}]},"method":"textDocument/didChange","jsonrpc":"2.0"}
+2025-08-08 02:10:53 1754590253100:[Log]ArkLanguageServer::OnDocumentDidChange in
+2025-08-08 02:10:53 1754590253100:[Warning]file:/home/elliot/.config/nvim/lua/plugins/foo.cj not exist
+2025-08-08 02:10:53 1754590253102:[Info]receive message body:{"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}},"method":"textDocument/documentSymbol","id":49,"jsonrpc":"2.0"}
+2025-08-08 02:10:53 1754590253102:[Log]ArkLanguageServer::OnDocumentSymbol in
+2025-08-08 02:10:53 1754590253102:[Log]ArkLanguageServer::GetDiagsOfCurFile in, file:/home/elliot/.config/nvim/lua/plugins/foo.cj.
+2025-08-08 02:10:53 1754590253102:[Info]file:/home/elliot/.config/nvim/lua/plugins/foo.cj, diagnostic is null.
+2025-08-08 02:10:53 1754590253102:[Log]ArkLanguageServer::ReadyForDiagnostics in, file:/home/elliot/.config/nvim/lua/plugins/foo.cj.
+2025-08-08 02:10:53 1754590253102:[Log]ArkLanguageServer::PublishDiagnostics in, file:file:///home/elliot/.config/nvim/lua/plugins/foo.cj.
+2025-08-08 02:10:53 1754590253102:[Info]send message body:{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}}
+2025-08-08 02:10:53 1754590253102:[Info]send message body:{"id":49,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:53 1754590253301:[Info]receive message body:{"params":{"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}},"method":"textDocument/semanticTokens/full","id":50,"jsonrpc":"2.0"}
+2025-08-08 02:10:53 1754590253301:[Log]ArkLanguageServer::OnSemanticTokens in.
+2025-08-08 02:10:53 1754590253301:[Warning]No didopen was received before OnSemanticTokens, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:53 1754590253301:[Info]send message body:{"id":50,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:53 1754590253301:[Info]receive message body:{"params":{"position":{"character":2,"line":1},"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}},"method":"textDocument/documentHighlight","id":51,"jsonrpc":"2.0"}
+2025-08-08 02:10:53 1754590253301:[Log]ArkLanguageServer::OnDocumentHighlight in.
+2025-08-08 02:10:53 1754590253301:[Warning]No didopen was received before OnDocumentHighlight, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:53 1754590253301:[Info]send message body:{"id":51,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:53 1754590253898:[Info]receive message body:{"params":{"position":{"character":2,"line":1},"textDocument":{"uri":"file:///home/elliot/.config/nvim/lua/plugins/foo.cj"}},"method":"textDocument/documentHighlight","id":52,"jsonrpc":"2.0"}
+2025-08-08 02:10:53 1754590253898:[Log]ArkLanguageServer::OnDocumentHighlight in.
+2025-08-08 02:10:53 1754590253898:[Warning]No didopen was received before OnDocumentHighlight, file:/home/elliot/.config/nvim/lua/plugins/foo.cj
+2025-08-08 02:10:53 1754590253898:[Info]send message body:{"id":52,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:54 1754590254306:[Info]receive message body:{"method":"shutdown","id":53,"jsonrpc":"2.0"}
+2025-08-08 02:10:54 1754590254306:[Info]send message body:{"id":53,"jsonrpc":"2.0","result":null}
+2025-08-08 02:10:54 1754590254316:[Info]receive message body:{"method":"exit","jsonrpc":"2.0"}
+2025-08-08 02:10:54 1754590254316:[Info][Thread 126271534949248] LSP finished 
+
