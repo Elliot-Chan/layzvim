@@ -1,0 +1,1 @@
+/home/elliot/playground/tree-sitter-cangjie/queries/highlights.scm
