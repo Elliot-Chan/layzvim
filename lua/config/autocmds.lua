@@ -7,17 +7,12 @@
 -- Or remove existing autocmds by their group name (which is prefixed with `lazyvim_` for the defaults)
 -- e.g. vim.api.nvim_del_augroup_by_name("lazyvim_wrap_spell")
 --
--- vim.api.nvim_create_autocmd({ "BufRead", "BufNewFile" }, {
---  pattern = "*.cj",
---  callback = function()
--- 设置缓冲区 filetype 和缩进
---    vim.bo.filetype = "Cangjie"
---    vim.bo.shiftwidth = 4
---    vim.bo.tabstop = 4
---   vim.bo.expandtab = true
---    vim.bo.autoindent = true
---    vim.bo.smartindent = false
---    vim.bo.cindent = false
---  end,
---  desc = "Set filetype for Cangjie files",
--- )
+local api = vim.api
+
+-- 对 markdown / text 关闭内置拼写检查
+api.nvim_create_autocmd("FileType", {
+    pattern = { "markdown", "text" },
+    callback = function()
+        vim.opt_local.spell = false
+    end,
+})

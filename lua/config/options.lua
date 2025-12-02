@@ -4,3 +4,4 @@
 --
 vim.opt.title = true
 vim.opt.titlestring = "%F - nvim"
+vim.g.auto_format = false
