@@ -20,7 +20,7 @@ return {
             },
 
             copilot = {
-                filetypes = { "c", "cpp", "lua", "python", "markdown", "Cangjie" },
+                filetypes = { "c", "cpp", "lua", "python", "markdown" },
                 keys = {
                     {
                         "<leader>a]",

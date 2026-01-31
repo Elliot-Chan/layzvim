@@ -9,6 +9,7 @@ return {
             callback = function()
                 require("nvim-treesitter.parsers").cangjie = {
                     install_info = {
+                        -- path = "~/temp/tree-sitter-cangjie",
                         path = "~/playground/treesitter",
                         generate = true,
                     },
