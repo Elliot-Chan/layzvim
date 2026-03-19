@@ -8,8 +8,7 @@ return {
         servers = {
             pyright = {},
             ruff = {},
-            ruff_lsp = {},
-            stylua = {},
+            lua_ls = {},
 
             clangd = {
                 cmd = { "clangd", "--background-index", "--clang-tidy" },

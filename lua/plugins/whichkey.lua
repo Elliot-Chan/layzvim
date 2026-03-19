@@ -13,6 +13,22 @@ return {
                 "Cursor", -- 新层级显示的名字
                 icon = "I",
             },
+            {
+                "<leader>u",
+                "UI/Tools",
+            },
+            {
+                "<leader>c",
+                "Code",
+            },
+            {
+                "<leader>d",
+                "Docs",
+            },
+            {
+                "<leader>a",
+                "AI/Codex",
+            },
         })
     end,
 }

@@ -2,7 +2,7 @@ return {
     "nvim-treesitter/nvim-treesitter",
     branch = "main", -- 将 master 改为 main
     lazy = false,
-    opts = { ensure_installed = { "cangjie" } },
+    opts = { ensure_installed = { "cangjie", "html" } },
     config = function(_, opts)
         vim.api.nvim_create_autocmd("User", {
             pattern = "TSUpdate",
