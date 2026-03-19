@@ -13,6 +13,8 @@ local state = {
 local extract_symbol_context
 local cursor_identifier
 local looks_like_api_symbol
+local sanitize_type_name
+local get_callable
 
 local function debug_enabled()
     return vim.g.cangjie_docs_debug == true
@@ -146,7 +148,17 @@ local function default_index_path()
 end
 
 local function configured_index_path()
-    return vim.g.cangjie_doc_index or vim.env.CANGJIE_DOC_INDEX or (vim.fn.stdpath("config") .. "/cangjie-docs.json")
+    local explicit = vim.g.cangjie_doc_index or vim.env.CANGJIE_DOC_INDEX
+    if explicit and explicit ~= "" then
+        return explicit
+    end
+
+    local cache_path = default_index_path()
+    if vim.fn.filereadable(cache_path) == 1 then
+        return cache_path
+    end
+
+    return vim.fn.stdpath("config") .. "/cangjie-docs.json"
 end
 
 local function configured_sync_path()
@@ -155,6 +167,15 @@ end
 
 local function configured_source_url()
     return vim.g.cangjie_doc_index_url or vim.env.CANGJIE_DOC_INDEX_URL or nil
+end
+
+local function warn_once_missing_index(path)
+    vim.g.cangjie_docs_missing_index_warnings = vim.g.cangjie_docs_missing_index_warnings or {}
+    if vim.g.cangjie_docs_missing_index_warnings[path] then
+        return
+    end
+    vim.g.cangjie_docs_missing_index_warnings[path] = true
+    vim.notify("找不到 Cangjie 文档索引: " .. path, vim.log.levels.WARN, { title = "Cangjie Docs" })
 end
 
 local function add_key(tbl, key, sym)
@@ -294,7 +315,7 @@ local function load_index()
 
     local text = read_file(path)
     if not text then
-        vim.notify("找不到 Cangjie 文档索引: " .. path, vim.log.levels.WARN, { title = "Cangjie Docs" })
+        warn_once_missing_index(path)
         state.loaded = true
         return nil
     end
@@ -607,6 +628,43 @@ local function normalize_signature_text(text)
     return text:lower()
 end
 
+local function extract_param_types_from_signature(text)
+    text = as_string(text)
+    if not text or text == "" then
+        return {}
+    end
+
+    local inside = text:match("%((.*)%)")
+    if not inside or inside == "" then
+        return {}
+    end
+
+    local out = {}
+    for part in inside:gmatch("[^,]+") do
+        part = trim(part)
+        if part then
+            local ptype = trim(part:match(":%s*(.+)$")) or part
+            ptype = sanitize_type_name(ptype) or ptype
+            if ptype then
+                table.insert(out, ptype)
+            end
+        end
+    end
+    return out
+end
+
+local function extract_return_type_from_signature(text)
+    text = as_string(text)
+    if not text or text == "" then
+        return nil
+    end
+    local ret = trim(text:match("%)%s*:%s*(.+)$"))
+    if not ret then
+        return nil
+    end
+    return sanitize_type_name(ret) or ret
+end
+
 local function extract_hover_signature_hint(lines, member_name)
     member_name = as_string(member_name)
     for _, raw in ipairs(lines or {}) do
@@ -621,10 +679,49 @@ local function extract_hover_signature_hint(lines, member_name)
     return nil
 end
 
-local function score_overload_candidate(sym, signature_hint)
+local function extract_source_call_hint(parsed, member_name)
+    parsed = as_table(parsed) or {}
+    local line = as_string(parsed.line_text)
+    local col0 = tonumber(parsed.cursor_col0)
+    member_name = as_string(member_name)
+    if not line or not col0 or not member_name or member_name == "" then
+        return nil
+    end
+
+    local col1 = col0 + 1
+    local member_start = col1
+    while member_start > 1 and line:sub(member_start - 1, member_start - 1):match("[%w_]") do
+        member_start = member_start - 1
+    end
+    local member_end = member_start + #member_name - 1
+    if line:sub(member_start, member_end) ~= member_name then
+        local left = line:sub(1, col1)
+        local s, e = left:find(member_name .. "%s*$")
+        if not s then
+            return nil
+        end
+        member_start, member_end = s, e
+    end
+
+    local i = member_end + 1
+    while i <= #line and line:sub(i, i):match("%s") do
+        i = i + 1
+    end
+
+    local next_char = line:sub(i, i)
+    if next_char == "<" then
+        return { generic_call = true }
+    end
+    if next_char == "(" then
+        return { generic_call = false }
+    end
+    return nil
+end
+
+local function score_overload_candidate(sym, signature_hint, source_hint)
     signature_hint = normalize_signature_text(signature_hint)
     if not signature_hint then
-        return 0
+        signature_hint = nil
     end
 
     local candidates = {
@@ -635,44 +732,89 @@ local function score_overload_candidate(sym, signature_hint)
     }
 
     local score = 0
+    local callable = get_callable(sym)
+    local candidate_param_types = {}
+    for _, p in ipairs(as_list(callable.params)) do
+        p = as_table(p) or {}
+        local ptype = sanitize_type_name(as_string(p.type))
+        if ptype then
+            table.insert(candidate_param_types, ptype)
+        end
+    end
+    local hint_param_types = extract_param_types_from_signature(signature_hint)
+    local candidate_return_type = sanitize_type_name(as_string(callable.return_type))
+        or extract_return_type_from_signature(sym.signature_short)
+        or extract_return_type_from_signature(sym.signature)
+    local hint_return_type = extract_return_type_from_signature(signature_hint)
     for _, candidate in ipairs(candidates) do
         if candidate then
-            if candidate == signature_hint then
+            if signature_hint and candidate == signature_hint then
                 score = math.max(score, 100)
-            elseif candidate:find(signature_hint, 1, true) or signature_hint:find(candidate, 1, true) then
+            elseif signature_hint and (candidate:find(signature_hint, 1, true) or signature_hint:find(candidate, 1, true)) then
                 score = math.max(score, 70)
             end
 
-            local hint_has_generic = signature_hint:find("<", 1, true) ~= nil
+            local hint_has_generic = signature_hint and signature_hint:find("<", 1, true) ~= nil or false
             local cand_has_generic = candidate:find("<", 1, true) ~= nil
-            if hint_has_generic == cand_has_generic then
+            if signature_hint and hint_has_generic == cand_has_generic then
                 score = score + 5
             end
 
-            local hint_has_any = signature_hint:find("any", 1, true) ~= nil
+            local hint_has_any = signature_hint and signature_hint:find("any", 1, true) ~= nil or false
             local cand_has_any = candidate:find("any", 1, true) ~= nil
-            if hint_has_any == cand_has_any then
+            if signature_hint and hint_has_any == cand_has_any then
                 score = score + 5
             end
+
+            if source_hint and source_hint.generic_call ~= nil then
+                if source_hint.generic_call == cand_has_generic then
+                    score = score + 30
+                else
+                    score = score - 15
+                end
+            end
+        end
+    end
+
+    if #hint_param_types > 0 or #candidate_param_types > 0 then
+        if #hint_param_types == #candidate_param_types then
+            score = score + 30
+        else
+            score = score - math.abs(#hint_param_types - #candidate_param_types) * 10
+        end
+
+        for i = 1, math.min(#hint_param_types, #candidate_param_types) do
+            if hint_param_types[i] == candidate_param_types[i] then
+                score = score + 25
+            end
+        end
+    end
+
+    if hint_return_type and candidate_return_type then
+        if hint_return_type == candidate_return_type then
+            score = score + 35
+        else
+            score = score - 25
         end
     end
 
     return score
 end
 
-local function choose_best_overload(candidates, lines, member_name)
+local function choose_best_overload(candidates, lines, member_name, parsed)
     if #candidates <= 1 then
         return candidates[1]
     end
 
     local signature_hint = extract_hover_signature_hint(lines, member_name)
-    if not signature_hint then
+    local source_hint = extract_source_call_hint(parsed, member_name)
+    if not signature_hint and not source_hint then
         return candidates[1]
     end
 
     table.sort(candidates, function(a, b)
-        local sa = score_overload_candidate(a, signature_hint)
-        local sb = score_overload_candidate(b, signature_hint)
+        local sa = score_overload_candidate(a, signature_hint, source_hint)
+        local sb = score_overload_candidate(b, signature_hint, source_hint)
         if sa ~= sb then
             return sa > sb
         end
@@ -682,7 +824,158 @@ local function choose_best_overload(candidates, lines, member_name)
     return candidates[1]
 end
 
-local sanitize_type_name
+local function choose_best_completion_overload(candidates, item, parsed, receiver_type)
+    if #candidates <= 1 then
+        return candidates[1]
+    end
+
+    item = as_table(item) or {}
+    local label = as_string(item.label)
+        or as_string(item.insertText)
+        or as_string(item.newText)
+    local signature_hint = as_string(item.detail) or label
+    local source_hint = extract_source_call_hint(parsed, label)
+    local receiver_tail = receiver_type and ((sanitize_type_name(receiver_type) or receiver_type):match("([%w_]+)$")) or nil
+    if not signature_hint and not source_hint then
+        return candidates[1]
+    end
+
+    local scored = {}
+    for _, sym in ipairs(candidates) do
+        local score = score_overload_candidate(sym, signature_hint, source_hint)
+        if receiver_tail and as_string(sym.container) == receiver_tail then
+            score = score + 10
+        end
+        table.insert(scored, { sym = sym, score = score })
+    end
+
+    for i, entry in ipairs(scored) do
+        append_debug_log(
+            ("[completion] scored_candidate[%d]=%s | %s | score=%s"):format(
+                i,
+                tostring(entry.sym and (entry.sym.id or entry.sym.fqname) or nil),
+                tostring(entry.sym and (entry.sym.signature_short or entry.sym.signature or entry.sym.qualified_title) or nil),
+                tostring(entry.score)
+            )
+        )
+    end
+
+    table.sort(scored, function(a, b)
+        if a.score ~= b.score then
+            return a.score > b.score
+        end
+        local af = as_string(a.sym and (a.sym.fqname or a.sym.id) or "") or ""
+        local bf = as_string(b.sym and (b.sym.fqname or b.sym.id) or "") or ""
+        return af < bf
+    end)
+
+    return scored[1] and scored[1].sym or nil
+end
+
+local function exact_member_candidates_for_type(type_name, member)
+    local sanitized_type = sanitize_type_name(type_name)
+    local member_name = as_string(member)
+    if not sanitized_type or not member_name or member_name == "" then
+        return {}
+    end
+
+    local type_tail = sanitized_type:match("([%w_]+)$") or sanitized_type
+    local type_module = sanitized_type:match("^(.*)%.([%w_]+)$")
+    local candidates = find_exact_symbols({
+        module = type_module,
+        container = type_tail,
+        member = member_name,
+    })
+    if #candidates == 0 then
+        candidates = find_exact_symbols({
+            container = type_tail,
+            member = member_name,
+        })
+    end
+    return candidates
+end
+
+local function member_candidates_on_type_hierarchy(type_name, member)
+    type_name = sanitize_type_name(type_name)
+    member = as_string(member)
+    if not type_name or not member or member == "" then
+        return {}
+    end
+
+    local visited = {}
+    local queue = { type_name }
+    local out = {}
+    local seen = {}
+
+    while #queue > 0 do
+        local current = table.remove(queue, 1)
+        current = sanitize_type_name(current)
+        if current and not visited[current] then
+            visited[current] = true
+
+            for _, sym in ipairs(exact_member_candidates_for_type(current, member)) do
+                local sid = as_string(sym.id) or as_string(sym.fqname)
+                if sid and not seen[sid] then
+                    seen[sid] = true
+                    table.insert(out, sym)
+                end
+            end
+
+            local type_sym = best_symbol_for_query(current)
+            local type_info = type_sym and as_table(type_sym.type_info) or nil
+            if type_info then
+                for _, base in ipairs(as_list(type_info.bases)) do
+                    local name = sanitize_type_name(base)
+                    if name and not visited[name] then
+                        table.insert(queue, name)
+                    end
+                end
+                for _, impl in ipairs(as_list(type_info.implements)) do
+                    local name = sanitize_type_name(impl)
+                    if name and not visited[name] then
+                        table.insert(queue, name)
+                    end
+                end
+            end
+        end
+    end
+
+    return out
+end
+
+local function same_module_member_candidates(type_name, member)
+    local sanitized_type = sanitize_type_name(type_name)
+    member = as_string(member)
+    if not sanitized_type or not member or member == "" then
+        return {}
+    end
+
+    local type_sym = best_symbol_for_query(sanitized_type)
+    local module_name = type_sym and as_string(type_sym.module) or sanitized_type:match("^(.*)%.([%w_]+)$")
+    if not module_name or module_name == "" then
+        return {}
+    end
+
+    return find_exact_symbols({
+        module = module_name,
+        member = member,
+    })
+end
+
+local function merge_symbol_lists(...)
+    local out = {}
+    local seen = {}
+    for _, list in ipairs({ ... }) do
+        for _, sym in ipairs(list or {}) do
+            local sid = as_string(sym.id) or as_string(sym.fqname)
+            if sid and not seen[sid] then
+                seen[sid] = true
+                table.insert(out, sym)
+            end
+        end
+    end
+    return out
+end
 
 local function find_member_on_type(type_name, member)
     type_name = sanitize_type_name(type_name)
@@ -914,7 +1207,7 @@ local function append_see_also(lines, sym)
     table.insert(lines, "")
 end
 
-local function get_callable(sym)
+get_callable = function(sym)
     local callable = as_table(sym.callable)
     if callable then
         return callable
@@ -1260,9 +1553,90 @@ end
 
 local function build_completion_markdown(sym)
     local lines = {}
+    local callable = get_callable(sym)
+    local kind = as_string(sym.kind)
     code_fence(lines, as_string(sym.signature_short) or as_string(sym.signature))
-    append_deprecated(lines, sym)
-    add_section(lines, "摘要", sym.summary_short_md or sym.summary_md)
+    local deprecated = as_table(sym.deprecated)
+    if deprecated and deprecated.is_deprecated then
+        local dep = trim(as_string(deprecated.message_md)) or "已废弃"
+        table.insert(lines, "> Deprecated: " .. dep)
+        table.insert(lines, "")
+    end
+    local summary = trim(as_string(sym.summary_short_md) or as_string(sym.summary_md))
+    if summary then
+        table.insert(lines, summary)
+        table.insert(lines, "")
+    end
+    if is_callable_kind(kind) then
+        local returns_md = as_string(sym.returns_md)
+        local return_type = as_string(callable.return_type)
+        if returns_md and returns_md ~= "" then
+            table.insert(lines, "返回: " .. returns_md)
+            table.insert(lines, "")
+        elseif return_type and return_type ~= "" then
+            table.insert(lines, "返回类型: `" .. return_type .. "`")
+            table.insert(lines, "")
+        end
+
+        local params = as_list(callable.params)
+        if #params > 0 then
+            table.insert(lines, "参数:")
+            for i = 1, math.min(#params, 3) do
+                local p = as_table(params[i]) or {}
+                local label = as_string(p.label) or "?"
+                local ptype = as_string(p.type) or "?"
+                local pdoc = trim(p.doc_md)
+                if pdoc then
+                    table.insert(lines, string.format("- `%s: %s` — %s", label, ptype, pdoc))
+                else
+                    table.insert(lines, string.format("- `%s: %s`", label, ptype))
+                end
+            end
+            if #params > 3 then
+                table.insert(lines, string.format("- 还有 %d 个参数...", #params - 3))
+            end
+            table.insert(lines, "")
+        end
+    elseif is_property_kind(kind) then
+        local value_info = as_table(sym.value_info)
+        local return_type = as_string(callable.return_type)
+        local value_type = value_info and as_string(value_info.value_type) or nil
+        local prop_type = value_type or return_type
+        if prop_type and prop_type ~= "" then
+            table.insert(lines, "类型: `" .. prop_type .. "`")
+            table.insert(lines, "")
+        end
+        local since = as_string(sym.since)
+        if since and since ~= "" then
+            table.insert(lines, "Since: `" .. since .. "`")
+            table.insert(lines, "")
+        end
+    elseif is_type_kind(kind) then
+        local type_info = as_table(sym.type_info)
+        if type_info then
+            local bases = {}
+            local implements = {}
+            for _, value in ipairs(as_list(type_info.bases)) do
+                push_text(bases, value)
+            end
+            for _, value in ipairs(as_list(type_info.implements)) do
+                push_text(implements, value)
+            end
+            if #bases > 0 then
+                table.insert(lines, "继承: `" .. table.concat(bases, ", ") .. "`")
+                table.insert(lines, "")
+            end
+            if #implements > 0 then
+                table.insert(lines, "实现: `" .. table.concat(implements, ", ") .. "`")
+                table.insert(lines, "")
+            end
+        end
+        local since = as_string(sym.since)
+        if since and since ~= "" then
+            table.insert(lines, "Since: `" .. since .. "`")
+            table.insert(lines, "")
+        end
+    end
     append_examples_short(lines, sym)
     return lines
 end
@@ -1570,7 +1944,7 @@ function M.find_symbol_for_hover_lines(lines, opts)
             })
         end
 
-        local exact_sym = choose_best_overload(exact_candidates, lines, member_name) or find_exact_symbol({
+        local exact_sym = choose_best_overload(exact_candidates, lines, member_name, parsed) or find_exact_symbol({
             module = module_name,
             container = container_name,
             member = member_name,
@@ -2303,32 +2677,50 @@ end
 function M.find_symbol_for_completion_item(item)
     load_index()
     item = as_table(item) or {}
+    local parsed = extract_symbol_context()
 
     local data = as_table(item.data)
     local docs_index_id = trim(data and data.docs_index_id)
     local docs_index_fqname = trim(data and data.docs_index_fqname)
+    local label = as_string(item.label)
+        or as_string(item.insertText)
+        or as_string(item.newText)
+    local detail = as_string(item.detail)
+    local kind = item.kind
+    append_debug_log(
+        ("[completion] label=%s detail=%s kind=%s docs_index_id=%s docs_index_fqname=%s expr=%s cursor_ident=%s"):format(
+            tostring(label),
+            tostring(detail),
+            tostring(kind),
+            tostring(docs_index_id),
+            tostring(docs_index_fqname),
+            tostring(parsed and parsed.expr or nil),
+            tostring(parsed and parsed.cursor_ident or nil)
+        )
+    )
     if docs_index_id then
         local by_id = best_symbol_for_query(docs_index_id)
+        append_debug_log("[completion] by_id=" .. tostring(by_id and (by_id.fqname or by_id.id) or nil))
         if by_id then
             return by_id
         end
     end
     if docs_index_fqname then
         local by_fqname = best_symbol_for_query(docs_index_fqname)
+        append_debug_log("[completion] by_fqname=" .. tostring(by_fqname and (by_fqname.fqname or by_fqname.id) or nil))
         if by_fqname then
             return by_fqname
         end
     end
 
-    local label = as_string(item.label)
-        or as_string(item.insertText)
-        or as_string(item.newText)
     if not label or label == "" then
+        append_debug_log("[completion] no_label")
         return nil
     end
 
     label = label:match("^([%w_%.]+)") or label
     if label == "" then
+        append_debug_log("[completion] normalized_label_empty")
         return nil
     end
 
@@ -2342,8 +2734,39 @@ function M.find_symbol_for_completion_item(item)
             receiver_type = infer_receiver_type_from_lsp(receiver, receiver_ctx.receiver_end_col1)
                 or infer_local_variable_type(receiver)
         end
+        append_debug_log(
+            ("[completion] receiver=%s receiver_type=%s"):format(
+                tostring(receiver),
+                tostring(receiver_type)
+            )
+        )
         if receiver_type then
-            local member_sym = find_member_on_type(receiver_type, label)
+            local exact_candidates = merge_symbol_lists(
+                member_candidates_on_type_hierarchy(receiver_type, label),
+                same_module_member_candidates(receiver_type, label)
+            )
+            append_debug_log("[completion] exact_candidates=" .. tostring(#exact_candidates))
+            for i, sym in ipairs(exact_candidates) do
+                append_debug_log(
+                    ("[completion] exact_candidate[%d]=%s | %s | %s"):format(
+                        i,
+                        tostring(sym and (sym.id or sym.fqname) or nil),
+                        tostring(sym and sym.fqname or nil),
+                        tostring(sym and (sym.signature_short or sym.signature or sym.qualified_title) or nil)
+                    )
+                )
+            end
+            local member_sym = choose_best_completion_overload(exact_candidates, item, parsed, receiver_type)
+            append_debug_log(
+                "[completion] exact_choice="
+                    .. tostring(member_sym and (member_sym.id or member_sym.fqname) or nil)
+                    .. " | "
+                    .. tostring(member_sym and (member_sym.signature_short or member_sym.signature or member_sym.qualified_title) or nil)
+            )
+            if not member_sym then
+                member_sym = find_member_on_type(receiver_type, label)
+                append_debug_log("[completion] inherited_choice=" .. tostring(member_sym and (member_sym.fqname or member_sym.id) or nil))
+            end
             if member_sym then
                 return member_sym
             end
@@ -2351,23 +2774,27 @@ function M.find_symbol_for_completion_item(item)
     end
 
     local sym = best_symbol_for_query(label)
+    append_debug_log("[completion] best_symbol=" .. tostring(sym and (sym.fqname or sym.id) or nil))
     if sym then
         return sym
     end
 
-    local detail = as_string(item.detail)
     if detail then
         local type_name = sanitize_type_name(detail)
         if type_name then
-            return best_symbol_for_query(type_name)
+            local by_type = best_symbol_for_query(type_name)
+            append_debug_log("[completion] by_type=" .. tostring(by_type and (by_type.fqname or by_type.id) or nil))
+            return by_type
         end
     end
 
+    append_debug_log("[completion] no_match")
     return nil
 end
 
 function M.documentation_for_completion_item(item)
     local sym = M.find_symbol_for_completion_item(item)
+    append_debug_log("[completion_doc] symbol=" .. tostring(sym and (sym.fqname or sym.id) or nil))
     if not sym then
         return nil, nil
     end
