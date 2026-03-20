@@ -26,13 +26,7 @@ api.nvim_create_user_command("FormatInfo", function()
     end
 
     vim.notify(
-        string.format(
-            "filetype=%s auto_format=%s lsp_fallback=%s formatters=%s",
-            filetype,
-            tostring(vim.g.auto_format ~= false),
-            tostring(lsp_fallback),
-            table.concat(parts, ", ")
-        ),
+        string.format("filetype=%s auto_format=%s lsp_fallback=%s formatters=%s", filetype, tostring(vim.g.auto_format ~= false), tostring(lsp_fallback), table.concat(parts, ", ")),
         vim.log.levels.INFO
     )
 end, { desc = "Show formatter info for current buffer" })
@@ -162,14 +156,7 @@ api.nvim_create_user_command("CangjieDocsDebug", function(opts)
         return
     end
 
-    vim.notify(
-        ("Cangjie docs debug: %s (%s)"):format(
-            docs.debug_enabled() and "on" or "off",
-            docs.debug_log_path()
-        ),
-        vim.log.levels.INFO,
-        { title = "Cangjie Docs" }
-    )
+    vim.notify(("Cangjie docs debug: %s (%s)"):format(docs.debug_enabled() and "on" or "off", docs.debug_log_path()), vim.log.levels.INFO, { title = "Cangjie Docs" })
 end, {
     desc = "Toggle Cangjie docs debug logging",
     nargs = "?",
@@ -198,3 +185,49 @@ api.nvim_create_user_command("CangjieDocsDebugInfo", function()
     local cfg = assert(dofile(vim.fn.stdpath("config") .. "/lsp/cangjie_lsp.lua"))
     cfg._codex_debug_snapshot()
 end, { desc = "Show Cangjie docs debug snapshot" })
+
+api.nvim_create_user_command("CangjieDocsCheck", function(opts)
+    local docs = require("cangjie_docs_index")
+    local limit = tonumber(opts.args)
+    local report = docs.compare_hover_cases(
+        docs.synthetic_hover_cases({
+            limit = limit,
+        }),
+        {
+            failures_only = true,
+        }
+    )
+
+    local lines = {
+        ("total=%d"):format(report.total),
+        ("passed=%d"):format(report.passed),
+        ("failed=%d"):format(report.failed),
+    }
+
+    for i, failure in ipairs(report.results or {}) do
+        if i > 10 then
+            table.insert(lines, ("... %d more failures"):format(#report.results - 10))
+            break
+        end
+        table.insert(lines, "")
+        table.insert(lines, ("[%d] %s"):format(i, failure.name or "?"))
+        table.insert(lines, ("expected=%s"):format(failure.expected or "nil"))
+        table.insert(lines, ("actual=%s"):format(failure.actual or "nil"))
+        table.insert(
+            lines,
+            ("parsed=%s / %s / %s / %s"):format(
+                failure.debug and failure.debug.module_name or "nil",
+                failure.debug and failure.debug.container_name or "nil",
+                failure.debug and failure.debug.member_name or "nil",
+                failure.debug and failure.debug.member_kind or "nil"
+            )
+        )
+    end
+
+    vim.notify(table.concat(lines, "\n"), report.failed == 0 and vim.log.levels.INFO or vim.log.levels.WARN, {
+        title = "Cangjie Docs Check",
+    })
+end, {
+    desc = "Run synthetic hover/docs resolution checks",
+    nargs = "?",
+})

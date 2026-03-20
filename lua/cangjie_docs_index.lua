@@ -479,8 +479,35 @@ local function best_symbol_for_query(query)
     return ranked[1] and ranked[1].sym or nil
 end
 
+local function unique_symbol_for_query(query)
+    local matches = state.by_key[query] or state.by_key[normalize(query)]
+    if type(matches) ~= "table" or #matches == 0 then
+        return nil
+    end
+
+    local unique = {}
+    local seen = {}
+    for _, sym in ipairs(matches) do
+        local key = as_string(sym.fqname) or as_string(sym.id)
+        if key and not seen[key] then
+            seen[key] = true
+            table.insert(unique, sym)
+        end
+    end
+
+    return #unique == 1 and unique[1] or nil
+end
+
 local function symbol_container(sym)
     return as_string(sym.container) or as_string(sym.module)
+end
+
+local function normalized_container_name(value)
+    value = as_string(value)
+    if not value or value == "" then
+        return nil
+    end
+    return normalize(sanitize_type_name(value) or value)
 end
 
 local function find_exact_symbol(fields)
@@ -489,14 +516,14 @@ local function find_exact_symbol(fields)
 
     local package_name = normalize(as_string(fields.package))
     local module_name = normalize(as_string(fields.module))
-    local container_name = normalize(as_string(fields.container))
+    local container_name = normalized_container_name(fields.container)
     local member_name = normalize(as_string(fields.member))
     local kind_name = normalize(as_string(fields.kind))
 
     local candidates = {}
     for _, sym in ipairs(state.symbols or {}) do
         local name = normalize(symbol_name(sym))
-        local container = normalize(symbol_container(sym))
+        local container = normalized_container_name(symbol_container(sym))
         local package = normalize(as_string(sym.package))
         local module = normalize(as_string(sym.module))
         local kind = normalize(as_string(sym.kind))
@@ -548,14 +575,14 @@ local function find_exact_symbols(fields)
 
     local package_name = normalize(as_string(fields.package))
     local module_name = normalize(as_string(fields.module))
-    local container_name = normalize(as_string(fields.container))
+    local container_name = normalized_container_name(fields.container)
     local member_name = normalize(as_string(fields.member))
     local kind_name = normalize(as_string(fields.kind))
 
     local candidates = {}
     for _, sym in ipairs(state.symbols or {}) do
         local name = normalize(symbol_name(sym))
-        local container = normalize(symbol_container(sym))
+        local container = normalized_container_name(symbol_container(sym))
         local package = normalize(as_string(sym.package))
         local module = normalize(as_string(sym.module))
         local kind = normalize(as_string(sym.kind))
@@ -595,6 +622,32 @@ local function find_exact_symbols(fields)
     end)
 
     return candidates
+end
+
+local function prefer_exact_case_candidates(candidates, member_name)
+    member_name = as_string(member_name)
+    if not member_name or member_name == "" then
+        return candidates
+    end
+
+    local exact = {}
+    for _, sym in ipairs(candidates or {}) do
+        if symbol_name(sym) == member_name then
+            table.insert(exact, sym)
+        end
+    end
+
+    return #exact > 0 and exact or candidates
+end
+
+local function prefer_top_level_candidates(candidates)
+    local top_level = {}
+    for _, sym in ipairs(candidates or {}) do
+        if trim(as_string(sym.container)) == nil then
+            table.insert(top_level, sym)
+        end
+    end
+    return #top_level > 0 and top_level or candidates
 end
 
 local function normalize_hover_member_kind(kind_name)
@@ -830,9 +883,7 @@ local function choose_best_completion_overload(candidates, item, parsed, receive
     end
 
     item = as_table(item) or {}
-    local label = as_string(item.label)
-        or as_string(item.insertText)
-        or as_string(item.newText)
+    local label = as_string(item.label) or as_string(item.insertText) or as_string(item.newText)
     local signature_hint = as_string(item.detail) or label
     local source_hint = extract_source_call_hint(parsed, label)
     local receiver_tail = receiver_type and ((sanitize_type_name(receiver_type) or receiver_type):match("([%w_]+)$")) or nil
@@ -1036,6 +1087,53 @@ local function add_section(lines, title, value)
     table.insert(lines, "")
 end
 
+local function first_sentence(value)
+    value = trim(value)
+    if not value then
+        return nil
+    end
+
+    value = value:gsub("\n+", " ")
+    local sentence = value:match("^(.-[。！？])") or value:match("^(.-%.)%s") or value:match("^(.-;)%s") or value:match("^(.-；)") or value
+    sentence = trim(sentence)
+    return sentence ~= "" and sentence or nil
+end
+
+local function compact_doc_text(value, max_len)
+    local text = first_sentence(value) or trim(value)
+    if not text then
+        return nil
+    end
+
+    max_len = max_len or 72
+    if #text > max_len then
+        text = trim(text:sub(1, max_len - 1)) .. "…"
+    end
+    return text
+end
+
+local function add_section_compact(lines, title, value, opts)
+    value = trim(value)
+    if not value then
+        return
+    end
+
+    opts = as_table(opts) or {}
+    local max_len = tonumber(opts.max_len) or 90
+    local force_title = opts.force_title == true
+    local compact = compact_doc_text(value, max_len)
+    local multiline = value:find("\n", 1, true) ~= nil
+    local should_inline = not force_title and compact and not multiline and #value <= max_len
+
+    if should_inline then
+        table.insert(lines, compact)
+        table.insert(lines, "")
+        return
+    end
+
+    add_section(lines, title, value)
+end
+
 local function code_fence(lines, text)
     text = trim(text)
     if not text then
@@ -1062,7 +1160,9 @@ local function append_deprecated(lines, sym)
         return
     end
     local msg = deprecated_message or "已弃用。"
-    table.insert(lines, "**Deprecated：** " .. msg)
+    table.insert(lines, "> Deprecated")
+    table.insert(lines, ">")
+    table.insert(lines, "> " .. msg:gsub("\n", "\n> "))
 
     deprecated = as_table(deprecated)
     local extras = {}
@@ -1080,7 +1180,7 @@ local function append_deprecated(lines, sym)
         table.insert(extras, "弃用版本：`" .. deprecated_since .. "`")
     end
     for _, extra in ipairs(extras) do
-        table.insert(lines, "- " .. extra)
+        table.insert(lines, "> - " .. extra)
     end
     table.insert(lines, "")
 end
@@ -1101,9 +1201,8 @@ local function append_availability(lines, sym)
         table.insert(bits, "不支持平台：`" .. table.concat(unsupported, ", ") .. "`")
     end
     if #bits > 0 then
-        table.insert(lines, "**可用性：**")
         for _, bit in ipairs(bits) do
-            table.insert(lines, "- " .. bit)
+            table.insert(lines, "> - " .. bit)
         end
         table.insert(lines, "")
     end
@@ -1268,9 +1367,7 @@ local function strip_markdown_sections_by_heading(text, headings)
             skipping = true
         elseif skipping then
             local starts_new_section = heading and trimmed:match("：$") ~= nil
-            local is_list = trimmed:match("^[-*]") ~= nil
-                or trimmed:match("^%d+%.") ~= nil
-                or trimmed:match("^%[") ~= nil
+            local is_list = trimmed:match("^[-*]") ~= nil or trimmed:match("^%d+%.") ~= nil or trimmed:match("^%[") ~= nil
             if trimmed == "" then
                 -- keep skipping through blank separators inside the removed section
             elseif starts_new_section and not heading_set[heading] then
@@ -1359,8 +1456,10 @@ local function append_examples(lines, sym)
     if #examples_md == 0 and #titles == 0 then
         return
     end
+
     table.insert(lines, "**示例：**")
     table.insert(lines, "")
+
     if #examples_md == 0 then
         for _, title in ipairs(titles) do
             title = trim(title)
@@ -1368,13 +1467,19 @@ local function append_examples(lines, sym)
                 table.insert(lines, "- " .. title)
             end
         end
+        return
     end
-    for _, example in ipairs(examples_md) do
-        local text = as_string(example)
-        if text and text ~= "" then
-            table.insert(lines, text)
-            table.insert(lines, "")
-        end
+
+    local first_example = trim(as_string(examples_md[1]))
+    if first_example then
+        table.insert(lines, first_example)
+        table.insert(lines, "")
+    end
+
+    local remaining = #examples_md - 1
+    if remaining > 0 then
+        table.insert(lines, ("还有 %d 个示例，建议在浏览器文档中查看。"):format(remaining))
+        table.insert(lines, "")
     end
 end
 
@@ -1418,12 +1523,12 @@ local function append_property_summary(lines, sym, callable)
     local value_type = value_info and as_string(value_info.value_type) or nil
     local prop_type = value_type or return_type
     if prop_type and prop_type ~= "" then
-        table.insert(lines, "**类型：** `" .. prop_type .. "`")
+        table.insert(lines, "`" .. prop_type .. "`")
         table.insert(lines, "")
     end
 
     if value_info and value_info.mutable ~= nil then
-        table.insert(lines, value_info.mutable and "**可变：** `true`" or "**只读：** `true`")
+        table.insert(lines, value_info.mutable and "可变属性" or "只读属性")
         table.insert(lines, "")
     end
 end
@@ -1432,10 +1537,10 @@ local function append_callable_summary(lines, sym, callable)
     local returns_md = as_string(sym.returns_md)
     local return_type = as_string(callable.return_type)
     if returns_md and returns_md ~= "" then
-        table.insert(lines, "**返回值：** " .. returns_md)
+        table.insert(lines, "返回: " .. returns_md)
         table.insert(lines, "")
     elseif return_type and return_type ~= "" then
-        table.insert(lines, "**返回类型：** `" .. return_type .. "`")
+        table.insert(lines, "返回类型: `" .. return_type .. "`")
         table.insert(lines, "")
     end
 
@@ -1461,14 +1566,9 @@ local function append_callable_summary(lines, sym, callable)
             else
                 default_text = ""
             end
-            table.insert(lines, string.format(
-                "- `%s: %s%s`%s — %s",
-                as_string(p.label) or "?",
-                as_string(p.type) or "?",
-                default_text,
-                flag_text,
-                as_string(p.doc_md) or ""
-            ))
+            local pdoc = compact_doc_text(as_string(p.doc_md), 54)
+            local suffix = pdoc and (" — " .. pdoc) or ""
+            table.insert(lines, string.format("- `%s: %s%s`%s%s", as_string(p.label) or "?", as_string(p.type) or "?", default_text, flag_text, suffix))
         end
         table.insert(lines, "")
     end
@@ -1500,19 +1600,25 @@ local function build_hover_markdown(sym)
     append_deprecated(lines, sym)
     append_availability(lines, sym)
     append_extension_info(lines, sym)
-    add_section(lines, "摘要", sym.summary_short_md)
-    if trim(sym.summary_md) and trim(sym.summary_md) ~= trim(sym.summary_short_md) then
-        add_section(lines, "说明", sym.summary_md)
+    local summary_short = trim(as_string(sym.summary_short_md))
+    if summary_short then
+        table.insert(lines, summary_short)
+        table.insert(lines, "")
+    end
+    local summary_full = trim(as_string(sym.summary_md))
+    if summary_full and summary_full ~= summary_short then
+        table.insert(lines, summary_full)
+        table.insert(lines, "")
     end
 
     local meta = {}
     local module_name = as_string(sym.module)
     if module_name and module_name ~= "" then
-        table.insert(meta, "module: `" .. module_name .. "`")
+        table.insert(meta, "`" .. module_name .. "`")
     end
     local since = as_string(sym.since)
     if since and since ~= "" then
-        table.insert(meta, "since: `" .. since .. "`")
+        table.insert(meta, "since `" .. since .. "`")
     end
     if #meta > 0 then
         table.insert(lines, table.concat(meta, " · "))
@@ -1534,9 +1640,9 @@ local function build_hover_markdown(sym)
         append_type_summary(lines, sym)
     end
 
-    add_section(lines, "详情", details_md)
-    add_section(lines, "备注", notes_md)
-    add_section(lines, "异常", exceptions_md)
+    add_section_compact(lines, "详情", details_md, { max_len = 100 })
+    add_section_compact(lines, "备注", notes_md, { max_len = 100 })
+    add_section_compact(lines, "异常", exceptions_md, { max_len = 100 })
     append_see_also(lines, sym)
 
     append_examples(lines, sym)
@@ -1712,26 +1818,69 @@ local function parse_hover_symbol_context(lines, opts)
     local member_name
     local member_kind
 
+    local function parse_signature_line(line)
+        line = trim(line)
+        if not line or line == "" then
+            return nil
+        end
+        if line:match("^Package info:") or line:match("^In%s+") then
+            return nil
+        end
+
+        local type_kind, type_name = line:match("^.-%f[%w_](class|struct|interface|enum)%f[^%w_]%s+([%w_%.]+)")
+        if type_kind and type_name then
+            return {
+                container = type_name,
+                kind = type_kind,
+            }
+        end
+
+        if line:match("^.-%f[%w_](init)%f[^%w_]") then
+            return {
+                member = "init",
+                kind = normalize_hover_member_kind("init"),
+            }
+        end
+
+        local value_kind, value_name = line:match("^.-%f[%w_](let|var|const|prop)%f[^%w_]%s+([%w_]+)")
+        if value_kind and value_name then
+            return {
+                member = value_name,
+                kind = normalize_hover_member_kind(value_kind),
+            }
+        end
+
+        local _, func_name = line:match("^.-%f[%w_](func)%f[^%w_]%s+([%w_]+)%s*[<%(]")
+        if func_name then
+            return {
+                member = func_name,
+                kind = normalize_hover_member_kind("func"),
+            }
+        end
+
+        return nil
+    end
+
     for _, raw in ipairs(lines) do
         local line = as_string(raw)
         if line and line ~= "" then
             module_name = module_name or line:match("Package info:%s*([%w_%.]+)")
             container_name = container_name
-                or line:match("In%s+class%s+([%w_%.]+)")
-                or line:match("In%s+struct%s+([%w_%.]+)")
-                or line:match("In%s+interface%s+([%w_%.]+)")
-                or line:match("In%s+enum%s+([%w_%.]+)")
-                or line:match("In%s+type%s+([%w_%.]+)")
-                or line:match("%(class%)%s+.-%f[%w_]class%s+([%w_%.]+)")
-                or line:match("%(struct%)%s+.-%f[%w_]struct%s+([%w_%.]+)")
-                or line:match("%(interface%)%s+.-%f[%w_]interface%s+([%w_%.]+)")
-                or line:match("%(enum%)%s+.-%f[%w_]enum%s+([%w_%.]+)")
-                or line:match("%(type%)%s+.-%f[%w_]type%s+([%w_%.]+)")
-                or (line:find("(class)", 1, true) and line:match("class%s+([%w_%.]+)"))
-                or (line:find("(struct)", 1, true) and line:match("struct%s+([%w_%.]+)"))
-                or (line:find("(interface)", 1, true) and line:match("interface%s+([%w_%.]+)"))
-                or (line:find("(enum)", 1, true) and line:match("enum%s+([%w_%.]+)"))
-                or (line:find("(type)", 1, true) and line:match("type%s+([%w_%.]+)"))
+                or line:match("In%s+class%s+([%w_%.<>]+)")
+                or line:match("In%s+struct%s+([%w_%.<>]+)")
+                or line:match("In%s+interface%s+([%w_%.<>]+)")
+                or line:match("In%s+enum%s+([%w_%.<>]+)")
+                or line:match("In%s+type%s+([%w_%.<>]+)")
+                or line:match("%(class%)%s+.-%f[%w_]class%s+([%w_%.<>]+)")
+                or line:match("%(struct%)%s+.-%f[%w_]struct%s+([%w_%.<>]+)")
+                or line:match("%(interface%)%s+.-%f[%w_]interface%s+([%w_%.<>]+)")
+                or line:match("%(enum%)%s+.-%f[%w_]enum%s+([%w_%.<>]+)")
+                or line:match("%(type%)%s+.-%f[%w_]type%s+([%w_%.<>]+)")
+                or (line:find("(class)", 1, true) and line:match("class%s+([%w_%.<>]+)"))
+                or (line:find("(struct)", 1, true) and line:match("struct%s+([%w_%.<>]+)"))
+                or (line:find("(interface)", 1, true) and line:match("interface%s+([%w_%.<>]+)"))
+                or (line:find("(enum)", 1, true) and line:match("enum%s+([%w_%.<>]+)"))
+                or (line:find("(type)", 1, true) and line:match("type%s+([%w_%.<>]+)"))
 
             local kind, name = line:match("%)%s+.-%f[%w_](let|var)%s+([%w_]+)")
             member_kind = member_kind or normalize_hover_member_kind(kind)
@@ -1746,6 +1895,13 @@ local function parse_hover_symbol_context(lines, opts)
             if not member_name and line:match("%)%s+.-%f[%w_](init)%f[^%w_]") then
                 member_kind = member_kind or normalize_hover_member_kind("init")
                 member_name = "init"
+            end
+
+            local signature = parse_signature_line(line)
+            if signature then
+                container_name = container_name or signature.container
+                member_kind = member_kind or signature.kind
+                member_name = member_name or signature.member
             end
         end
     end
@@ -1767,6 +1923,10 @@ local function parse_hover_symbol_context(lines, opts)
         if not expr or expr == container_name or expr:find(".", 1, true) == nil then
             member_name = nil
         end
+    end
+
+    if member_kind == "init" then
+        member_name = "init"
     end
 
     return {
@@ -1820,13 +1980,7 @@ function M.find_symbol_for_hover_lines(lines, opts)
     end
 
     if container_name and not member_name then
-        append_debug_log(
-            ("[hover_type] module=%s container=%s cursor_ident=%s"):format(
-                tostring(module_name),
-                tostring(container_name),
-                tostring(parsed.cursor_ident)
-            )
-        )
+        append_debug_log(("[hover_type] module=%s container=%s cursor_ident=%s"):format(tostring(module_name), tostring(container_name), tostring(parsed.cursor_ident)))
         local type_sym = find_exact_symbol({
             module = module_name,
             member = container_name,
@@ -1848,12 +2002,7 @@ function M.find_symbol_for_hover_lines(lines, opts)
         for _, query in ipairs(queries) do
             query = as_string(query)
             local sym = query and M.find_symbol(query) or nil
-            append_debug_log(
-                ("[hover_type] query=%s -> %s"):format(
-                    tostring(query),
-                    tostring(sym and (sym.fqname or sym.id) or nil)
-                )
-            )
+            append_debug_log(("[hover_type] query=%s -> %s"):format(tostring(query), tostring(sym and (sym.fqname or sym.id) or nil)))
             if sym then
                 return sym
             end
@@ -1943,12 +2092,14 @@ function M.find_symbol_for_hover_lines(lines, opts)
                 member = member_name,
             })
         end
+        exact_candidates = prefer_exact_case_candidates(exact_candidates, member_name)
 
-        local exact_sym = choose_best_overload(exact_candidates, lines, member_name, parsed) or find_exact_symbol({
-            module = module_name,
-            container = container_name,
-            member = member_name,
-        })
+        local exact_sym = choose_best_overload(exact_candidates, lines, member_name, parsed)
+            or find_exact_symbol({
+                module = module_name,
+                container = container_name,
+                member = member_name,
+            })
         if exact_sym then
             return exact_sym
         end
@@ -1958,6 +2109,51 @@ function M.find_symbol_for_hover_lines(lines, opts)
             table.insert(queries, module_name .. "." .. container_name .. "." .. member_name)
         end
         table.insert(queries, container_name .. "." .. member_name)
+
+        for _, query in ipairs(queries) do
+            local sym = M.find_symbol(query)
+            if sym then
+                return sym
+            end
+        end
+    end
+
+    if not container_name and member_name then
+        local exact_candidates = find_exact_symbols({
+            module = module_name,
+            member = member_name,
+            kind = member_kind,
+        })
+        if #exact_candidates == 0 then
+            exact_candidates = find_exact_symbols({
+                module = module_name,
+                member = member_name,
+            })
+        end
+        if #exact_candidates == 0 then
+            exact_candidates = find_exact_symbols({
+                member = member_name,
+                kind = member_kind,
+            })
+        end
+        if #exact_candidates == 0 then
+            exact_candidates = find_exact_symbols({
+                member = member_name,
+            })
+        end
+        exact_candidates = prefer_top_level_candidates(exact_candidates)
+        exact_candidates = prefer_exact_case_candidates(exact_candidates, member_name)
+
+        local exact_sym = choose_best_overload(exact_candidates, lines, member_name, parsed)
+        if exact_sym then
+            return exact_sym
+        end
+
+        local queries = {}
+        if module_name and module_name ~= "" then
+            table.insert(queries, module_name .. "." .. member_name)
+        end
+        table.insert(queries, member_name)
 
         for _, query in ipairs(queries) do
             local sym = M.find_symbol(query)
@@ -2071,6 +2267,146 @@ end
 function M.all_symbols()
     load_index()
     return state.symbols
+end
+
+local function synthetic_hover_lines_for_symbol(sym)
+    sym = as_table(sym)
+    if not sym then
+        return nil
+    end
+
+    local lines = {}
+    if trim(sym.module) then
+        table.insert(lines, "Package info: " .. sym.module)
+    end
+
+    local container = trim(as_string(sym.container))
+    if container then
+        local module_name = trim(as_string(sym.module))
+        local container_sym = best_symbol_for_query((module_name and (module_name .. "." .. container)) or container)
+        local container_kind = trim(container_sym and container_sym.kind) or "class"
+        table.insert(lines, ("In %s %s"):format(container_kind, container))
+    end
+
+    local signature = trim(as_string(sym.signature_short)) or trim(as_string(sym.signature)) or trim(as_string(sym.qualified_title))
+    if signature then
+        table.insert(lines, signature)
+    elseif trim(as_string(sym.display)) then
+        table.insert(lines, as_string(sym.display))
+    end
+
+    return #lines > 0 and lines or nil
+end
+
+function M.synthetic_hover_cases(opts)
+    load_index()
+    opts = as_table(opts) or {}
+
+    local limit = tonumber(opts.limit)
+    local include_kinds = {}
+    for _, kind in ipairs(as_list(opts.include_kinds)) do
+        include_kinds[normalize(kind)] = true
+    end
+
+    if vim.tbl_isempty(include_kinds) then
+        include_kinds = {
+            class = true,
+            struct = true,
+            interface = true,
+            enum = true,
+            method = true,
+            property = true,
+            ["function"] = true,
+            constructor = true,
+            const = true,
+            var = true,
+        }
+    end
+
+    local cases = {}
+    for _, sym in ipairs(state.symbols or {}) do
+        local kind = normalize(sym.kind)
+        if include_kinds[kind] then
+            local lines = synthetic_hover_lines_for_symbol(sym)
+            if lines then
+                local module_name = trim(as_string(sym.module))
+                local container = trim(as_string(sym.container))
+                local display = as_string(sym.display) or as_string(sym.name)
+                table.insert(cases, {
+                    name = as_string(sym.fqname) or as_string(sym.id) or display or "?",
+                    expected = as_string(sym.fqname) or as_string(sym.id),
+                    kind = as_string(sym.kind),
+                    lines = lines,
+                    context = {
+                        cursor_ident = display,
+                        expr = container and display and (container .. "." .. display)
+                            or (module_name and display and not container and kind ~= "class" and kind ~= "struct" and kind ~= "interface" and kind ~= "enum" and (module_name .. "." .. display))
+                            or display,
+                    },
+                })
+                if limit and #cases >= limit then
+                    break
+                end
+            end
+        end
+    end
+
+    return cases
+end
+
+function M.compare_hover_cases(cases, opts)
+    load_index()
+    opts = as_table(opts) or {}
+    cases = as_list(cases)
+
+    local results = {}
+    local passed = 0
+
+    for index, case in ipairs(cases) do
+        case = as_table(case) or {}
+        local expected = trim(case.expected)
+        local lines = as_list(case.lines)
+        local matched = M.find_symbol_for_hover_lines(lines, {
+            context = as_table(case.context),
+        })
+        local actual = matched and (matched.fqname or matched.id) or nil
+        local ok = expected ~= nil and actual == expected
+        if ok then
+            passed = passed + 1
+        end
+
+        table.insert(results, {
+            index = index,
+            name = trim(case.name) or expected or ("case-" .. index),
+            expected = expected,
+            actual = actual,
+            ok = ok,
+            kind = trim(case.kind),
+            lines = lines,
+            debug = M.debug_hover_symbol_context(lines, {
+                context = as_table(case.context),
+            }),
+        })
+    end
+
+    local failures = {}
+    for _, result in ipairs(results) do
+        if not result.ok then
+            table.insert(failures, result)
+        end
+    end
+
+    if opts.failures_only then
+        results = failures
+    end
+
+    return {
+        total = #cases,
+        passed = passed,
+        failed = #cases - passed,
+        failures = failures,
+        results = results,
+    }
 end
 
 extract_symbol_context = function()
@@ -2190,9 +2526,7 @@ local function cursor_in_local_binding_position()
     local col = vim.api.nvim_win_get_cursor(0)[2] + 1
     local left = line:sub(1, col)
 
-    return left:match("%f[%w_](let|var|const)%f[^%w_]%s+[%w_]*$")
-        or left:match("%f[%w_](for)%f[^%w_]%s+[%w_]*$")
-        or left:match("%f[%w_](catch)%f[^%w_]%s+[%w_]*$")
+    return left:match("%f[%w_](let|var|const)%f[^%w_]%s+[%w_]*$") or left:match("%f[%w_](for)%f[^%w_]%s+[%w_]*$") or left:match("%f[%w_](catch)%f[^%w_]%s+[%w_]*$")
 end
 
 looks_like_api_symbol = function(name)
@@ -2441,7 +2775,7 @@ function M.find_symbol_for_cursor()
 
     local ident = cursor_identifier() or vim.fn.expand("<cword>")
     if not looks_like_api_symbol(ident) then
-        return nil
+        return unique_symbol_for_query(ident)
     end
 
     local sym = M.find_symbol(ident)
@@ -2471,7 +2805,7 @@ function M.should_try_lsp_hover()
     end
 
     local ident = cursor_identifier() or vim.fn.expand("<cword>")
-    return looks_like_api_symbol(ident)
+    return looks_like_api_symbol(ident) or M.find_symbol(ident) ~= nil
 end
 
 local function format_symbol_item(sym)
@@ -2481,12 +2815,15 @@ local function format_symbol_item(sym)
     if #summary > 48 then
         summary = summary:sub(1, 45) .. "..."
     end
-    local meta = table.concat(vim.tbl_filter(function(v)
-        return v and v ~= ""
-    end, {
-        as_string(sym.kind),
-        as_string(sym.module),
-    }), " · ")
+    local meta = table.concat(
+        vim.tbl_filter(function(v)
+            return v and v ~= ""
+        end, {
+            as_string(sym.kind),
+            as_string(sym.module),
+        }),
+        " · "
+    )
 
     local parts = { display }
     if meta ~= "" then
@@ -2574,20 +2911,25 @@ function M.select_symbol()
         local filtered = symbols
         if q and q ~= "" then
             filtered = vim.tbl_filter(function(sym)
-                local haystack = table.concat(vim.tbl_filter(function(v)
-                    return type(v) == "string" and v ~= ""
-                end, {
-                    as_string(sym.id),
-                    as_string(sym.name),
-                    as_string(sym.display),
-                    as_string(sym.fqname),
-                    as_string(sym.module),
-                    as_string(sym.signature),
-                    as_string(sym.summary_short_md),
-                    as_string(sym.summary_md),
-                    as_string(sym.details_md),
-                    as_string(sym.search_text),
-                }), "\n"):lower()
+                local haystack = table
+                    .concat(
+                        vim.tbl_filter(function(v)
+                            return type(v) == "string" and v ~= ""
+                        end, {
+                            as_string(sym.id),
+                            as_string(sym.name),
+                            as_string(sym.display),
+                            as_string(sym.fqname),
+                            as_string(sym.module),
+                            as_string(sym.signature),
+                            as_string(sym.summary_short_md),
+                            as_string(sym.summary_md),
+                            as_string(sym.details_md),
+                            as_string(sym.search_text),
+                        }),
+                        "\n"
+                    )
+                    :lower()
                 return haystack:find(q, 1, true) ~= nil
             end, symbols)
         end
@@ -2662,10 +3004,7 @@ function M.scroll_preview(key)
     local new_topline = math.max(1, math.min(line_count, topline + step))
     local new_cursor = math.max(1, math.min(line_count, cursor[1] + step))
     local ok = pcall(function()
-        vim.fn.win_execute(
-            win,
-            string.format("call winrestview({'topline': %d, 'lnum': %d, 'col': 0})", new_topline, new_cursor)
-        )
+        vim.fn.win_execute(win, string.format("call winrestview({'topline': %d, 'lnum': %d, 'col': 0})", new_topline, new_cursor))
         vim.api.nvim_win_set_cursor(win, { new_cursor, 0 })
     end)
     if not ok then
@@ -2682,9 +3021,7 @@ function M.find_symbol_for_completion_item(item)
     local data = as_table(item.data)
     local docs_index_id = trim(data and data.docs_index_id)
     local docs_index_fqname = trim(data and data.docs_index_fqname)
-    local label = as_string(item.label)
-        or as_string(item.insertText)
-        or as_string(item.newText)
+    local label = as_string(item.label) or as_string(item.insertText) or as_string(item.newText)
     local detail = as_string(item.detail)
     local kind = item.kind
     append_debug_log(
@@ -2731,20 +3068,11 @@ function M.find_symbol_for_completion_item(item)
         if looks_like_api_symbol(receiver) then
             receiver_type = receiver
         else
-            receiver_type = infer_receiver_type_from_lsp(receiver, receiver_ctx.receiver_end_col1)
-                or infer_local_variable_type(receiver)
+            receiver_type = infer_receiver_type_from_lsp(receiver, receiver_ctx.receiver_end_col1) or infer_local_variable_type(receiver)
         end
-        append_debug_log(
-            ("[completion] receiver=%s receiver_type=%s"):format(
-                tostring(receiver),
-                tostring(receiver_type)
-            )
-        )
+        append_debug_log(("[completion] receiver=%s receiver_type=%s"):format(tostring(receiver), tostring(receiver_type)))
         if receiver_type then
-            local exact_candidates = merge_symbol_lists(
-                member_candidates_on_type_hierarchy(receiver_type, label),
-                same_module_member_candidates(receiver_type, label)
-            )
+            local exact_candidates = merge_symbol_lists(member_candidates_on_type_hierarchy(receiver_type, label), same_module_member_candidates(receiver_type, label))
             append_debug_log("[completion] exact_candidates=" .. tostring(#exact_candidates))
             for i, sym in ipairs(exact_candidates) do
                 append_debug_log(
