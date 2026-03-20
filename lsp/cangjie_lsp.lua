@@ -25,6 +25,7 @@ local capabilities = make_capabilities()
 local ignore_codes = {
     [162] = true,
     [463] = true,
+    [751] = true,
     [753] = true,
     [781] = true,
 }
@@ -243,9 +244,11 @@ local function debug_snapshot()
         for i, line in ipairs(lines) do
             table.insert(parts, ("hover[%d]=%s"):format(i, line))
         end
-        local debug = docs.debug_hover_symbol_context and docs.debug_hover_symbol_context(lines, {
-            context = docs.current_cursor_context and docs.current_cursor_context() or nil,
-        }) or nil
+        local debug = docs.debug_hover_symbol_context
+                and docs.debug_hover_symbol_context(lines, {
+                    context = docs.current_cursor_context and docs.current_cursor_context() or nil,
+                })
+            or nil
         if debug then
             table.insert(parts, ("module=%s"):format(debug.module_name or "nil"))
             table.insert(parts, ("container=%s"):format(debug.container_name or "nil"))
@@ -495,6 +498,7 @@ return {
             end
             map_cangjie_keys(bufnr)
         end)
+        vim.notify("Cangjie LSP start success", vim.log.levels.INFO)
     end,
 
     _codex_debug_docs_resolution = debug_docs_resolution,
