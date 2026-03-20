@@ -15,6 +15,7 @@ local cursor_identifier
 local looks_like_api_symbol
 local sanitize_type_name
 local get_callable
+local extract_type_from_hover_lines
 
 local function debug_enabled()
     return vim.g.cangjie_docs_debug == true
@@ -1112,6 +1113,28 @@ local function compact_doc_text(value, max_len)
     return text
 end
 
+local function remove_redundant_summary_prefix(summary_short, summary_full)
+    summary_short = trim(summary_short)
+    summary_full = trim(summary_full)
+    if not summary_short or not summary_full then
+        return summary_full
+    end
+
+    if summary_full == summary_short then
+        return nil
+    end
+
+    if vim.startswith(summary_full, summary_short) then
+        local rest = trim(summary_full:sub(#summary_short + 1))
+        if rest and rest ~= "" then
+            return rest
+        end
+        return nil
+    end
+
+    return summary_full
+end
+
 local function add_section_compact(lines, title, value, opts)
     value = trim(value)
     if not value then
@@ -1132,6 +1155,20 @@ local function add_section_compact(lines, title, value, opts)
     end
 
     add_section(lines, title, value)
+end
+
+local function compact_details_value(value)
+    value = trim(value)
+    if not value then
+        return nil
+    end
+
+    local heading, item = value:match("^([^\n：:]+)[：:]%s*\n%s*[-*]%s+(.+)$")
+    if heading and item and not item:find("\n", 1, true) then
+        return ("%s: %s"):format(trim(heading), trim(item))
+    end
+
+    return value
 end
 
 local function code_fence(lines, text)
@@ -1605,17 +1642,14 @@ local function build_hover_markdown(sym)
         table.insert(lines, summary_short)
         table.insert(lines, "")
     end
-    local summary_full = trim(as_string(sym.summary_md))
-    if summary_full and summary_full ~= summary_short then
+    local summary_full = remove_redundant_summary_prefix(summary_short, as_string(sym.summary_md))
+    if summary_full then
         table.insert(lines, summary_full)
         table.insert(lines, "")
     end
 
+    local module_name = trim(as_string(sym.module))
     local meta = {}
-    local module_name = as_string(sym.module)
-    if module_name and module_name ~= "" then
-        table.insert(meta, "`" .. module_name .. "`")
-    end
     local since = as_string(sym.since)
     if since and since ~= "" then
         table.insert(meta, "since `" .. since .. "`")
@@ -1640,12 +1674,17 @@ local function build_hover_markdown(sym)
         append_type_summary(lines, sym)
     end
 
-    add_section_compact(lines, "详情", details_md, { max_len = 100 })
+    add_section_compact(lines, "详情", compact_details_value(details_md), { max_len = 100 })
     add_section_compact(lines, "备注", notes_md, { max_len = 100 })
     add_section_compact(lines, "异常", exceptions_md, { max_len = 100 })
     append_see_also(lines, sym)
 
     append_examples(lines, sym)
+
+    if module_name then
+        table.insert(lines, "`" .. module_name .. "`")
+        table.insert(lines, "")
+    end
 
     local url = symbol_url(sym)
     local doc_link = format_link("查看文档", url)
@@ -1941,6 +1980,23 @@ local function parse_hover_symbol_context(lines, opts)
     }
 end
 
+local function extract_declared_type_from_hover_lines(lines, ident)
+    ident = as_string(ident)
+    for _, raw in ipairs(lines or {}) do
+        local line = as_string(raw)
+        if line and line ~= "" then
+            local target = ident and ident ~= "" and vim.pesc(ident) or "[%w_]+"
+            local type_name = line:match("^%s*let%s+" .. target .. "%s*:%s*([%w_%.<>%[%]%?!]+)")
+                or line:match("^%s*var%s+" .. target .. "%s*:%s*([%w_%.<>%[%]%?!]+)")
+                or line:match("^%s*const%s+" .. target .. "%s*:%s*([%w_%.<>%[%]%?!]+)")
+            type_name = sanitize_type_name(type_name)
+            if type_name then
+                return type_name
+            end
+        end
+    end
+end
+
 function M.find_symbol_for_hover_lines(lines, opts)
     load_index()
     if type(lines) ~= "table" or #lines == 0 then
@@ -2159,6 +2215,14 @@ function M.find_symbol_for_hover_lines(lines, opts)
             local sym = M.find_symbol(query)
             if sym then
                 return sym
+            end
+        end
+
+        local hover_type = extract_declared_type_from_hover_lines(lines, parsed.cursor_ident or member_name) or extract_type_from_hover_lines(lines)
+        if hover_type then
+            local type_sym = best_symbol_for_query(hover_type)
+            if type_sym then
+                return type_sym
             end
         end
     end
@@ -2521,6 +2585,31 @@ cursor_identifier = function()
     return ident
 end
 
+local function cursor_in_call_like_position()
+    local line = vim.api.nvim_get_current_line()
+    local ctx = extract_symbol_context()
+    local expr = as_table(ctx) and as_string(ctx.expr) or nil
+    if not expr or expr == "" then
+        return false
+    end
+
+    local parts = vim.split(expr, ".", { plain = true, trimempty = true })
+    local ident = parts[#parts]
+    local start_col = tonumber(ctx.start_col)
+
+    if not ident or ident == "" or not start_col or start_col < 1 then
+        return false
+    end
+
+    local idx = start_col + #ident
+    while idx <= #line and line:sub(idx, idx):match("%s") do
+        idx = idx + 1
+    end
+
+    local next_char = line:sub(idx, idx)
+    return next_char == "(" or next_char == "<"
+end
+
 local function cursor_in_local_binding_position()
     local line = vim.api.nvim_get_current_line()
     local col = vim.api.nvim_win_get_cursor(0)[2] + 1
@@ -2578,7 +2667,7 @@ sanitize_type_name = function(type_name)
     return type_name ~= "" and type_name or nil
 end
 
-local function extract_type_from_hover_lines(lines)
+extract_type_from_hover_lines = function(lines)
     for _, line in ipairs(lines or {}) do
         local text = as_string(line)
         if text and text ~= "" then
@@ -2775,7 +2864,10 @@ function M.find_symbol_for_cursor()
 
     local ident = cursor_identifier() or vim.fn.expand("<cword>")
     if not looks_like_api_symbol(ident) then
-        return unique_symbol_for_query(ident)
+        if cursor_in_call_like_position() then
+            return unique_symbol_for_query(ident)
+        end
+        return nil
     end
 
     local sym = M.find_symbol(ident)
@@ -2805,7 +2897,10 @@ function M.should_try_lsp_hover()
     end
 
     local ident = cursor_identifier() or vim.fn.expand("<cword>")
-    return looks_like_api_symbol(ident) or M.find_symbol(ident) ~= nil
+    if looks_like_api_symbol(ident) then
+        return true
+    end
+    return cursor_in_call_like_position() and unique_symbol_for_query(ident) ~= nil
 end
 
 local function format_symbol_item(sym)

@@ -296,12 +296,25 @@ local function hover_or_local_docs()
         return
     end
 
+    local_sym = docs.find_symbol_for_cursor()
+    append_debug_log("[K] local_cursor_pre=" .. tostring(local_sym and (local_sym.fqname or local_sym.id) or nil))
+    if local_sym then
+        docs.show_symbol(local_sym)
+        return
+    end
+
+    local hover_sym, hover_lines = docs_from_current_hover()
+    append_debug_log("[K] hover_pre=" .. tostring(hover_sym and (hover_sym.fqname or hover_sym.id) or nil))
+    if hover_sym then
+        docs.show_symbol(hover_sym)
+        return
+    end
+
     local has_member_access = docs.cursor_has_member_access and docs.cursor_has_member_access() or false
     local should_try_hover = has_member_access or docs.should_try_lsp_hover()
     append_debug_log("[K] member_access=" .. tostring(has_member_access) .. " should_try_hover=" .. tostring(should_try_hover))
 
     if should_try_hover then
-        local hover_sym, hover_lines = docs_from_current_hover()
         if hover_sym then
             append_debug_log("[K] show_hover_symbol=" .. tostring(hover_sym and (hover_sym.fqname or hover_sym.id) or nil))
             docs.show_symbol(hover_sym)
