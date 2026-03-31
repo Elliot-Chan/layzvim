@@ -5,5 +5,6 @@ vim.bo.expandtab = true
 vim.bo.cindent = false
 vim.bo.smartindent = false
 vim.bo.indentexpr = ""
+vim.b.autoformat = false
 vim.lsp.enable("cangjie_lsp")
 -- vim.b.undo_ftplugin = (vim.b.undo_ftplugin or "") .. "|setl sw< ts< et<"

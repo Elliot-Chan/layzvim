@@ -16,6 +16,9 @@ local looks_like_api_symbol
 local sanitize_type_name
 local get_callable
 local extract_type_from_hover_lines
+local infer_local_variable_type
+local infer_receiver_type_from_lsp
+local split_top_level_csv
 
 local function debug_enabled()
     return vim.g.cangjie_docs_debug == true
@@ -33,13 +36,14 @@ local function append_debug_log(message)
     fd:close()
 end
 
-local function set_preview_state(bufnr, winid)
+local function set_preview_state(bufnr, winid, action)
     vim.g.cangjie_docs_preview_buf = bufnr
     vim.g.cangjie_docs_preview_win = winid
+    vim.g.cangjie_docs_preview_action = action
 end
 
 local function get_preview_state()
-    return vim.g.cangjie_docs_preview_buf, vim.g.cangjie_docs_preview_win
+    return vim.g.cangjie_docs_preview_buf, vim.g.cangjie_docs_preview_win, vim.g.cangjie_docs_preview_action
 end
 
 local function read_file(path)
@@ -60,6 +64,50 @@ local function write_file(path, text)
     fd:write(text)
     fd:close()
     return true
+end
+
+split_top_level_csv = function(text)
+    text = type(text) == "string" and text or nil
+    if not text or text == "" then
+        return {}
+    end
+
+    local parts = {}
+    local current = {}
+    local angle, paren, bracket, brace = 0, 0, 0, 0
+
+    for i = 1, #text do
+        local ch = text:sub(i, i)
+        if ch == "<" then
+            angle = angle + 1
+        elseif ch == ">" and angle > 0 then
+            angle = angle - 1
+        elseif ch == "(" then
+            paren = paren + 1
+        elseif ch == ")" and paren > 0 then
+            paren = paren - 1
+        elseif ch == "[" then
+            bracket = bracket + 1
+        elseif ch == "]" and bracket > 0 then
+            bracket = bracket - 1
+        elseif ch == "{" then
+            brace = brace + 1
+        elseif ch == "}" and brace > 0 then
+            brace = brace - 1
+        end
+
+        if ch == "," and angle == 0 and paren == 0 and bracket == 0 and brace == 0 then
+            table.insert(parts, table.concat(current))
+            current = {}
+        else
+            current[#current + 1] = ch
+        end
+    end
+
+    if #current > 0 then
+        table.insert(parts, table.concat(current))
+    end
+    return parts
 end
 
 local function normalize(s)
@@ -148,26 +196,181 @@ local function default_index_path()
     return vim.fn.stdpath("cache") .. "/cangjie/docs-index.json"
 end
 
-local function configured_index_path()
-    local explicit = vim.g.cangjie_doc_index or vim.env.CANGJIE_DOC_INDEX
-    if explicit and explicit ~= "" then
-        return explicit
+local function ensure_string_list(value)
+    if type(value) == "string" then
+        local item = trim(value)
+        return item and { item } or {}
+    end
+    if type(value) ~= "table" then
+        return {}
+    end
+
+    local out = {}
+    for _, item in ipairs(value) do
+        item = trim(item)
+        if item then
+            table.insert(out, item)
+        end
+    end
+    return out
+end
+
+local function configured_source_groups()
+    local groups = as_table(vim.g.cangjie_doc_sources)
+    return groups or {}
+end
+
+local function configured_source_name()
+    local selected = trim(vim.g.cangjie_doc_source)
+    if selected and configured_source_groups()[selected] then
+        return selected
+    end
+    return nil
+end
+
+local function default_index_paths_for_group(name, count)
+    local prefix = trim(name) or "source"
+    local paths = {}
+    for i = 1, math.max(count or 0, 0) do
+        if i == 1 then
+            paths[i] = vim.fn.stdpath("cache") .. ("/cangjie/%s-docs-index.json"):format(prefix)
+        else
+            paths[i] = vim.fn.stdpath("cache") .. ("/cangjie/%s-docs-index-%d.json"):format(prefix, i)
+        end
+    end
+    return paths
+end
+
+local function source_group_config(name)
+    local groups = configured_source_groups()
+    local group = as_table(groups[name])
+    if not group then
+        return nil
+    end
+
+    local indexes = ensure_string_list(group.indexes or group.paths or group.index or group.path)
+    local urls = ensure_string_list(group.urls or group.source_urls or group.url or group.source_url)
+    return {
+        name = name,
+        indexes = indexes,
+        urls = urls,
+    }
+end
+
+local function configured_index_paths()
+    local selected_group = configured_source_name()
+    if selected_group then
+        local group = source_group_config(selected_group)
+        if group and #group.indexes > 0 then
+            return group.indexes
+        end
+        if group and #group.urls > 0 then
+            return default_index_paths_for_group(group.name, #group.urls)
+        end
+    end
+
+    local explicit_many = ensure_string_list(vim.g.cangjie_doc_indexes)
+    if #explicit_many > 0 then
+        return explicit_many
+    end
+
+    local explicit = trim(vim.g.cangjie_doc_index or vim.env.CANGJIE_DOC_INDEX)
+    if explicit then
+        return { explicit }
     end
 
     local cache_path = default_index_path()
     if vim.fn.filereadable(cache_path) == 1 then
-        return cache_path
+        return { cache_path }
     end
 
-    return vim.fn.stdpath("config") .. "/cangjie-docs.json"
+    return { vim.fn.stdpath("config") .. "/cangjie-docs.json" }
 end
 
-local function configured_sync_path()
-    return vim.g.cangjie_doc_index or vim.env.CANGJIE_DOC_INDEX or default_index_path()
+local function configured_index_path()
+    return configured_index_paths()[1]
+end
+
+local function configured_sync_paths()
+    local selected_group = configured_source_name()
+    if selected_group then
+        local group = source_group_config(selected_group)
+        if group and #group.indexes > 0 then
+            return group.indexes
+        end
+        if group and #group.urls > 0 then
+            return default_index_paths_for_group(group.name, #group.urls)
+        end
+    end
+
+    local explicit_many = ensure_string_list(vim.g.cangjie_doc_indexes)
+    if #explicit_many > 0 then
+        return explicit_many
+    end
+
+    local explicit = trim(vim.g.cangjie_doc_index or vim.env.CANGJIE_DOC_INDEX)
+    if explicit then
+        return { explicit }
+    end
+
+    return { default_index_path() }
+end
+
+local function configured_source_urls()
+    local selected_group = configured_source_name()
+    if selected_group then
+        local group = source_group_config(selected_group)
+        if group and #group.urls > 0 then
+            return group.urls
+        end
+    end
+
+    local many = ensure_string_list(vim.g.cangjie_doc_index_urls)
+    if #many > 0 then
+        return many
+    end
+
+    local single = trim(vim.g.cangjie_doc_index_url or vim.env.CANGJIE_DOC_INDEX_URL)
+    if single then
+        return { single }
+    end
+
+    return {}
 end
 
 local function configured_source_url()
-    return vim.g.cangjie_doc_index_url or vim.env.CANGJIE_DOC_INDEX_URL or nil
+    return configured_source_urls()[1]
+end
+
+local function default_index_path_for_slot(index)
+    if index == 1 then
+        return default_index_path()
+    end
+    return vim.fn.stdpath("cache") .. ("/cangjie/docs-index-%d.json"):format(index)
+end
+
+local function resolve_sync_targets(urls, opts)
+    opts = as_table(opts) or {}
+    local explicit_many = ensure_string_list(opts.paths)
+    if #explicit_many > 0 then
+        return explicit_many
+    end
+
+    local explicit_one = trim(opts.path)
+    if explicit_one then
+        return { explicit_one }
+    end
+
+    local configured = configured_sync_paths()
+    if #configured >= #urls then
+        return configured
+    end
+
+    local targets = {}
+    for i = 1, #urls do
+        targets[i] = configured[i] or default_index_path_for_slot(i)
+    end
+    return targets
 end
 
 local function warn_once_missing_index(path)
@@ -312,50 +515,88 @@ local function load_index()
         return state.index
     end
 
-    local path = configured_index_path()
-
-    local text = read_file(path)
-    if not text then
-        warn_once_missing_index(path)
-        state.loaded = true
-        return nil
-    end
-
-    local ok, data = pcall(vim.json.decode, text)
-    if not ok or type(data) ~= "table" then
-        vim.notify("Cangjie 文档索引 JSON 解析失败", vim.log.levels.ERROR, { title = "Cangjie Docs" })
-        state.loaded = true
-        return nil
-    end
-
-    state.index = data
+    local paths = configured_index_paths()
     state.by_key = {}
     state.by_source = {}
     state.by_diagnostic = {}
     state.symbols = {}
-
+    state.index = {
+        format = nil,
+        generated_at = nil,
+        source = nil,
+        symbol_count = 0,
+        diagnostics = {},
+        symbols = state.symbols,
+        sources = {},
+        source_paths = paths,
+    }
     state.metadata = {
-        format = data.format,
-        generated_at = data.generated_at,
-        source = data.source,
-        symbol_count = data.symbol_count,
-        diagnostics = as_list(data.diagnostics),
+        format = nil,
+        generated_at = nil,
+        source = nil,
+        symbol_count = 0,
+        diagnostics = {},
+        sources = {},
+        source_paths = paths,
     }
 
-    local symbols = as_table(data.symbols) or as_table(data.records) or {}
-    for _, sym in ipairs(symbols) do
-        sym.search_text = build_search_text(sym)
-        table.insert(state.symbols, sym)
-        index_symbol(sym, state.by_key)
-        index_symbol_source(sym, state.by_source)
+    local loaded_any = false
+    for _, path in ipairs(paths) do
+        local text = read_file(path)
+        if not text then
+            warn_once_missing_index(path)
+            goto continue
+        end
+
+        local ok, data = pcall(vim.json.decode, text)
+        if not ok or type(data) ~= "table" then
+            vim.notify("Cangjie 文档索引 JSON 解析失败: " .. path, vim.log.levels.ERROR, { title = "Cangjie Docs" })
+            goto continue
+        end
+
+        loaded_any = true
+        state.index.format = state.index.format or data.format
+        state.index.generated_at = state.index.generated_at or data.generated_at
+        state.index.source = state.index.source or data.source
+        state.metadata.format = state.metadata.format or data.format
+        state.metadata.generated_at = state.metadata.generated_at or data.generated_at
+        state.metadata.source = state.metadata.source or data.source
+        table.insert(state.index.sources, {
+            path = path,
+            generated_at = data.generated_at,
+            source = data.source,
+            symbol_count = data.symbol_count,
+        })
+        table.insert(state.metadata.sources, {
+            path = path,
+            generated_at = data.generated_at,
+            source = data.source,
+            symbol_count = data.symbol_count,
+        })
+
+        local symbols = as_table(data.symbols) or as_table(data.records) or {}
+        for _, sym in ipairs(symbols) do
+            sym.search_text = build_search_text(sym)
+            sym.__doc_index_path = path
+            table.insert(state.symbols, sym)
+            index_symbol(sym, state.by_key)
+            index_symbol_source(sym, state.by_source)
+        end
+
+        for _, diag in ipairs(as_list(data.diagnostics)) do
+            table.insert(state.index.diagnostics, diag)
+            index_diagnostic(diag, state.by_diagnostic)
+        end
+
+        ::continue::
     end
 
-    for _, diag in ipairs(as_list(data.diagnostics)) do
-        index_diagnostic(diag, state.by_diagnostic)
-    end
+    state.index.symbol_count = #state.symbols
+    state.metadata.symbol_count = #state.symbols
+    state.metadata.diagnostics = state.index.diagnostics
 
     state.loaded = true
-    return state.index
+    return loaded_any and state.index or nil
 end
 
 local function symbol_url(sym)
@@ -480,6 +721,37 @@ local function best_symbol_for_query(query)
     return ranked[1] and ranked[1].sym or nil
 end
 
+local function exact_symbol_for_query(query)
+    query = as_string(query)
+    if not query or query == "" then
+        return nil
+    end
+
+    local normalized_query = normalize(query)
+    local matches = state.by_key[query] or state.by_key[normalized_query]
+    if type(matches) ~= "table" or #matches == 0 then
+        return nil
+    end
+
+    local exact = {}
+    for _, sym in ipairs(matches) do
+        for _, candidate in ipairs(symbol_qualified_names(sym)) do
+            local normalized_candidate = normalize(candidate)
+            if normalized_candidate and normalized_candidate == normalized_query then
+                table.insert(exact, sym)
+                break
+            end
+        end
+    end
+
+    if #exact == 0 then
+        return nil
+    end
+
+    local ranked = rank_symbols(exact, query)
+    return ranked[1] and ranked[1].sym or nil
+end
+
 local function unique_symbol_for_query(query)
     local matches = state.by_key[query] or state.by_key[normalize(query)]
     if type(matches) ~= "table" or #matches == 0 then
@@ -497,6 +769,40 @@ local function unique_symbol_for_query(query)
     end
 
     return #unique == 1 and unique[1] or nil
+end
+
+local function best_type_symbol_for_query(query)
+    query = as_string(query)
+    if not query or query == "" then
+        return nil
+    end
+
+    local matches = state.by_key[query] or state.by_key[normalize(query)]
+    if type(matches) ~= "table" or #matches == 0 then
+        return nil
+    end
+
+    local exact = {}
+    local normalized_query = normalize(query)
+    for _, sym in ipairs(matches) do
+        local kind = normalize(as_string(sym.kind))
+        if kind == "class" or kind == "struct" or kind == "interface" or kind == "enum" or kind == "type" then
+            for _, candidate in ipairs(symbol_qualified_names(sym)) do
+                local normalized_candidate = normalize(candidate)
+                if normalized_candidate and normalized_candidate == normalized_query then
+                    table.insert(exact, sym)
+                    break
+                end
+            end
+        end
+    end
+
+    if #exact == 0 then
+        return nil
+    end
+
+    local ranked = rank_symbols(exact, query)
+    return ranked[1] and ranked[1].sym or nil
 end
 
 local function symbol_container(sym)
@@ -625,6 +931,26 @@ local function find_exact_symbols(fields)
     return candidates
 end
 
+local function find_constructor_symbol(type_name)
+    type_name = sanitize_type_name(type_name)
+    if not type_name then
+        return nil
+    end
+
+    local tail = type_name:match("([%w_]+)$") or type_name
+    local candidates = find_exact_symbols({
+        container = tail,
+        member = "init",
+    })
+    if #candidates == 0 then
+        return nil
+    end
+    table.sort(candidates, function(a, b)
+        return (as_string(a.fqname) or as_string(a.id) or "") < (as_string(b.fqname) or as_string(b.id) or "")
+    end)
+    return candidates[1]
+end
+
 local function prefer_exact_case_candidates(candidates, member_name)
     member_name = as_string(member_name)
     if not member_name or member_name == "" then
@@ -695,9 +1021,9 @@ local function extract_param_types_from_signature(text)
 
     local out = {}
     for part in inside:gmatch("[^,]+") do
-        part = trim(part)
-        if part then
-            local ptype = trim(part:match(":%s*(.+)$")) or part
+        local item = trim(part)
+        if item then
+            local ptype = trim(item:match(":%s*(.+)$")) or item
             ptype = sanitize_type_name(ptype) or ptype
             if ptype then
                 table.insert(out, ptype)
@@ -1045,7 +1371,11 @@ local function find_member_on_type(type_name, member)
         if current and not visited[current] then
             visited[current] = true
 
-            local direct = best_symbol_for_query(current .. "." .. member)
+            local direct_candidates = exact_member_candidates_for_type(current, member)
+            local direct = direct_candidates[1]
+            if not direct then
+                direct = best_symbol_for_query(current .. "." .. member)
+            end
             if direct then
                 return direct
             end
@@ -1299,6 +1629,11 @@ local function clean_markdown_section_body(value, title)
         value = value:gsub("^" .. escaped .. "%s*：\n?", "")
         value = value:gsub("^" .. escaped .. "%s*:\n?", "")
     end
+
+    value = value:gsub("^%*%*%s*说明%s*：%s*%**\n?", "")
+    value = value:gsub("^%*%*%s*说明%s*:%s*%**\n?", "")
+    value = value:gsub("^说明%s*：\n?", "")
+    value = value:gsub("^说明%s*:\n?", "")
 
     return trim(value)
 end
@@ -1603,7 +1938,10 @@ local function append_callable_summary(lines, sym, callable)
             else
                 default_text = ""
             end
-            local pdoc = compact_doc_text(as_string(p.doc_md), 54)
+            local pdoc = trim(as_string(p.doc_md))
+            if pdoc then
+                pdoc = pdoc:gsub("\n+", " ")
+            end
             local suffix = pdoc and (" — " .. pdoc) or ""
             table.insert(lines, string.format("- `%s: %s%s`%s%s", as_string(p.label) or "?", as_string(p.type) or "?", default_text, flag_text, suffix))
         end
@@ -1662,6 +2000,10 @@ local function build_hover_markdown(sym)
     local details_md = dedupe_details_md(sym, callable)
     local notes_md = clean_markdown_section_body(sym.notes_md, "备注")
     local exceptions_md = clean_markdown_section_body(sym.exceptions_md, "异常")
+    details_md = clean_markdown_section_body(details_md, "详情")
+    if details_md and notes_md and trim(details_md) == trim(notes_md) then
+        notes_md = nil
+    end
     if exceptions_md and as_list(callable.throws)[1] ~= nil then
         exceptions_md = nil
     end
@@ -1693,14 +2035,39 @@ local function build_hover_markdown(sym)
         table.insert(lines, "")
     end
 
+    if #lines == 0 then
+        local title = trim(as_string(sym.signature))
+            or trim(as_string(sym.signature_short))
+            or trim(as_string(sym.qualified_title))
+            or trim(as_string(sym.page_title))
+            or trim(as_string(sym.display))
+            or trim(as_string(sym.fqname))
+            or trim(as_string(sym.id))
+        if title then
+            code_fence(lines, title)
+        end
+        if module_name then
+            table.insert(lines, "`" .. module_name .. "`")
+            table.insert(lines, "")
+        end
+        if doc_link then
+            table.insert(lines, doc_link)
+            table.insert(lines, "")
+        end
+        append_debug_log("[hover_doc] fallback title=" .. tostring(title) .. " module=" .. tostring(module_name) .. " link=" .. tostring(doc_link ~= nil))
+    end
+
     return lines
 end
 
-local function build_completion_markdown(sym)
+local function build_completion_markdown(sym, opts)
+    opts = as_table(opts) or {}
     local lines = {}
     local callable = get_callable(sym)
     local kind = as_string(sym.kind)
-    code_fence(lines, as_string(sym.signature_short) or as_string(sym.signature))
+    if opts.omit_signature ~= true then
+        code_fence(lines, as_string(sym.signature_short) or as_string(sym.signature))
+    end
     local deprecated = as_table(sym.deprecated)
     if deprecated and deprecated.is_deprecated then
         local dep = trim(as_string(deprecated.message_md)) or "已废弃"
@@ -1847,7 +2214,83 @@ function M.find_symbol(name)
     if not name or name == "" then
         return nil
     end
-    return best_symbol_for_query(name)
+    return exact_symbol_for_query(name)
+end
+
+function M.find_symbols(name)
+    load_index()
+    name = as_string(name)
+    if not name or name == "" then
+        return {}
+    end
+
+    local matches = state.by_key[name] or state.by_key[normalize(name)]
+    if type(matches) ~= "table" or #matches == 0 then
+        return {}
+    end
+
+    local out = {}
+    local seen = {}
+    for _, sym in ipairs(matches) do
+        local key = as_string(sym.id) or as_string(sym.fqname)
+        if key and not seen[key] then
+            seen[key] = true
+            table.insert(out, sym)
+        end
+    end
+    return out
+end
+
+function M.find_symbol_for_call(name, arg_count)
+    load_index()
+    name = as_string(name)
+    arg_count = tonumber(arg_count)
+    if not name or name == "" then
+        return nil
+    end
+
+    local matches = state.by_key[name] or state.by_key[normalize(name)]
+    if type(matches) ~= "table" or #matches == 0 then
+        return nil
+    end
+
+    local ranked = {}
+    for _, sym in ipairs(matches) do
+        local callable = get_callable(sym)
+        local params = as_list(callable.params)
+        local param_count = #params
+        local score = score_symbol_match(sym, name)
+        if arg_count ~= nil then
+            if param_count == arg_count then
+                score = score + 100
+            else
+                score = score - math.abs(param_count - arg_count) * 10
+            end
+        end
+        table.insert(ranked, {
+            sym = sym,
+            score = score,
+            param_count = param_count,
+            fqname = as_string(sym.fqname) or as_string(sym.id) or "",
+        })
+    end
+
+    table.sort(ranked, function(a, b)
+        if a.score ~= b.score then
+            return a.score > b.score
+        end
+        if arg_count ~= nil and a.param_count ~= b.param_count then
+            return math.abs(a.param_count - arg_count) < math.abs(b.param_count - arg_count)
+        end
+        return a.fqname < b.fqname
+    end)
+
+    return ranked[1] and ranked[1].sym or nil
+end
+
+function M.resolve_member_on_type(type_name, member)
+    load_index()
+    return find_member_on_type(type_name, member)
 end
 
 local function parse_hover_symbol_context(lines, opts)
@@ -2266,6 +2709,7 @@ local function completion_receiver_context()
     end
 
     local tail = left:match("([%w_]*)$")
+    local prefix = left:match("%.([%w_]*)$") or ""
     local receiver_end_col1 = #left - #tail - 1
     if receiver_end_col1 < 1 then
         receiver_end_col1 = #receiver
@@ -2273,8 +2717,164 @@ local function completion_receiver_context()
 
     return {
         receiver = receiver,
+        prefix = prefix,
         receiver_end_col1 = receiver_end_col1,
     }
+end
+
+local function prefix_member_candidates_for_type(type_name, prefix)
+    type_name = sanitize_type_name(type_name)
+    prefix = as_string(prefix) or ""
+    if not type_name then
+        return {}
+    end
+
+    local visited = {}
+    local queue = { type_name }
+    local out = {}
+    local seen = {}
+
+    while #queue > 0 do
+        local current = table.remove(queue, 1)
+        current = sanitize_type_name(current)
+        if current and not visited[current] then
+            visited[current] = true
+
+            local type_tail = current:match("([%w_]+)$") or current
+            local type_module = current:match("^(.*)%.([%w_]+)$")
+
+            for _, sym in ipairs(state.symbols or {}) do
+                local container = as_string(sym.container)
+                local member_name = symbol_name(sym)
+                if container == type_tail and member_name and member_name ~= "" then
+                    local module_name = as_string(sym.module)
+                    local module_match = (type_module == nil or type_module == "" or module_name == type_module)
+                    local prefix_match = (prefix == "" or member_name:sub(1, #prefix) == prefix)
+                    if module_match and prefix_match then
+                        local sid = as_string(sym.id) or as_string(sym.fqname)
+                        if sid and not seen[sid] then
+                            seen[sid] = true
+                            table.insert(out, sym)
+                        end
+                    end
+                end
+            end
+
+            local type_sym = best_symbol_for_query(current)
+            local type_info = type_sym and as_table(type_sym.type_info) or nil
+            if type_info then
+                for _, base in ipairs(as_list(type_info.bases)) do
+                    local name = sanitize_type_name(base)
+                    if name and not visited[name] then
+                        table.insert(queue, name)
+                    end
+                end
+                for _, impl in ipairs(as_list(type_info.implements)) do
+                    local name = sanitize_type_name(impl)
+                    if name and not visited[name] then
+                        table.insert(queue, name)
+                    end
+                end
+            end
+        end
+    end
+
+    return out
+end
+
+local function completion_item_kind_for_symbol(sym)
+    local CompletionItemKind = vim.lsp.protocol.CompletionItemKind or {}
+    local kind = normalize(as_string(sym and sym.kind) or "")
+    if kind == "init" or kind == "constructor" then
+        return CompletionItemKind.Constructor or 4
+    end
+    if kind == "func" or kind == "function" then
+        return CompletionItemKind.Function or 3
+    end
+    if kind == "method" then
+        return CompletionItemKind.Method or 2
+    end
+    if kind == "prop" or kind == "property" or kind == "field" then
+        return CompletionItemKind.Field or 5
+    end
+    if kind == "let" or kind == "var" or kind == "const" then
+        return CompletionItemKind.Variable or 6
+    end
+    if kind == "class" then
+        return CompletionItemKind.Class or 7
+    end
+    if kind == "interface" then
+        return CompletionItemKind.Interface or 8
+    end
+    if kind == "module" or kind == "package" then
+        return CompletionItemKind.Module or 9
+    end
+    if kind == "struct" or kind == "type" then
+        return CompletionItemKind.Struct or 22
+    end
+    if kind == "enum" then
+        return CompletionItemKind.Enum or 13
+    end
+    if kind == "enum_member" then
+        return CompletionItemKind.EnumMember or 20
+    end
+    return CompletionItemKind.Text or 1
+end
+
+function M.completion_items_for_current_context()
+    load_index()
+
+    local receiver_ctx = completion_receiver_context()
+    if not receiver_ctx then
+        return {}
+    end
+
+    local receiver = receiver_ctx.receiver
+    local prefix = receiver_ctx.prefix or ""
+    local receiver_type
+    if looks_like_api_symbol(receiver) then
+        receiver_type = receiver
+    else
+        receiver_type = infer_receiver_type_from_lsp(receiver, receiver_ctx.receiver_end_col1) or infer_local_variable_type(receiver)
+    end
+    if not receiver_type then
+        return {}
+    end
+
+    local candidates = prefix_member_candidates_for_type(receiver_type, prefix)
+    local items = {}
+    local seen_labels = {}
+
+    table.sort(candidates, function(a, b)
+        local an = as_string(symbol_name(a)) or ""
+        local bn = as_string(symbol_name(b)) or ""
+        if an ~= bn then
+            return an < bn
+        end
+        local af = as_string(a.fqname) or as_string(a.id) or ""
+        local bf = as_string(b.fqname) or as_string(b.id) or ""
+        return af < bf
+    end)
+
+    for _, sym in ipairs(candidates) do
+        local label = as_string(symbol_name(sym))
+        if label and label ~= "" and not seen_labels[label] then
+            seen_labels[label] = true
+            table.insert(items, {
+                label = label,
+                kind = completion_item_kind_for_symbol(sym),
+                detail = as_string(sym.signature_short) or as_string(sym.signature) or as_string(sym.fqname),
+                insertText = label,
+                filterText = label,
+                data = {
+                    docs_index_id = sym.id,
+                    docs_index_fqname = sym.fqname,
+                },
+            })
+        end
+    end
+
+    return items
 end
 
 function M.find_symbol_for_location(location)
@@ -2615,7 +3215,20 @@ local function cursor_in_local_binding_position()
     local col = vim.api.nvim_win_get_cursor(0)[2] + 1
     local left = line:sub(1, col)
 
-    return left:match("%f[%w_](let|var|const)%f[^%w_]%s+[%w_]*$") or left:match("%f[%w_](for)%f[^%w_]%s+[%w_]*$") or left:match("%f[%w_](catch)%f[^%w_]%s+[%w_]*$")
+    return left:match("^%s*let%s+[%w_]*$")
+        or left:match("^%s*var%s+[%w_]*$")
+        or left:match("^%s*const%s+[%w_]*$")
+        or left:match("^%s*for%s+[%w_]*$")
+        or left:match("^%s*catch%s+[%w_]*$")
+end
+
+local function cursor_in_pattern_binding_position()
+    local line = vim.api.nvim_get_current_line()
+    local col = vim.api.nvim_win_get_cursor(0)[2] + 1
+    local left = line:sub(1, col)
+
+    return left:match("^%s*case.+%(%s*[%w_]*$") ~= nil
+        or left:match("^%s*case.+,%s*[%w_]*$") ~= nil
 end
 
 looks_like_api_symbol = function(name)
@@ -2634,6 +3247,161 @@ local function infer_type_from_rhs(rhs)
 
     rhs = rhs:gsub("%s+", "")
 
+    local function display_type_name_local(type_name)
+        type_name = trim(as_string(type_name))
+        if not type_name or type_name == "" then
+            return nil
+        end
+        local nullable_prefix = type_name:match("^%?")
+        type_name = type_name:gsub("[`%s]", "")
+        type_name = type_name:gsub("[%?%!%[%]]+$", "")
+        type_name = type_name:match("([%w_%.<>%[%],]+)$") or type_name
+        if nullable_prefix and not type_name:match("^%?") then
+            type_name = "?" .. type_name
+        end
+        return type_name ~= "" and type_name or nil
+    end
+
+    if rhs:match('^".*"$') then
+        return "String"
+    end
+    if rhs:match("^'.*'$") then
+        return "Rune"
+    end
+    if rhs == "true" or rhs == "false" then
+        return "Bool"
+    end
+    if rhs:match("^%-?%d+$") then
+        return "Int64"
+    end
+    if rhs:match("^%-?%d+%.%d+$") then
+        return "Float64"
+    end
+    if rhs:find("+", 1, true) and not rhs:find("[%*/%%]", 1) then
+        local only_string_parts = true
+        for part in rhs:gmatch("[^+]+") do
+            if not part:match('^".*"$') then
+                only_string_parts = false
+                break
+            end
+        end
+        if only_string_parts then
+            return "String"
+        end
+    end
+
+    local function indexed_expr_return_type(expr)
+        local receiver, bracket = expr:match("^([%w_%.]+)%[(.*)%]$")
+        if not receiver or not bracket then
+            return nil
+        end
+
+        local receiver_type = nil
+        if looks_like_api_symbol(receiver) then
+            receiver_type = display_type_name_local(receiver)
+        elseif infer_local_variable_type then
+            receiver_type = infer_local_variable_type(receiver)
+        end
+        local receiver_base = sanitize_type_name(receiver_type)
+        append_debug_log(
+            ("[infer_rhs_index] rhs=%s receiver=%s receiver_type=%s base=%s bracket=%s"):format(
+                tostring(expr),
+                tostring(receiver),
+                tostring(receiver_type),
+                tostring(receiver_base),
+                tostring(bracket)
+            )
+        )
+        if not receiver_base then
+            return nil
+        end
+
+        local type_sym = best_symbol_for_query(receiver_base)
+        local module_name = type_sym and as_string(type_sym.module) or receiver_base:match("^(.*)%.([%w_]+)$")
+        local container_name = (type_sym and as_string(type_sym.display)) or receiver_base:match("([%w_]+)$") or receiver_base
+        local arg_count = #(split_top_level_csv(bracket) or {})
+        local wants_slice = bracket:find("..", 1, true) ~= nil
+        append_debug_log(
+            ("[infer_rhs_index] mode=%s arg_count=%s"):format(
+                wants_slice and "slice" or "index",
+                tostring(arg_count)
+            )
+        )
+        local operator_return_type = nil
+
+        for _, sym in ipairs(state.symbols or {}) do
+            local kind = normalize(as_string(sym.kind) or "")
+            local container = as_string(sym.container)
+            local sym_module = as_string(sym.module)
+            local signature = as_string(sym.signature) or as_string(sym.signature_short) or ""
+            local callable = get_callable(sym)
+            local return_type = as_string(callable.return_type) or as_string(sym.return_type)
+            if kind == "operator"
+                and container == container_name
+                and signature:find("operator", 1, true)
+                and signature:find("[]", 1, true)
+                and (not module_name or module_name == "" or sym_module == module_name)
+                and return_type
+                and return_type ~= ""
+                and sanitize_type_name(return_type) ~= "Unit"
+            then
+                local param_count = #(as_list(callable.params))
+                local accepts_index = (not wants_slice) and arg_count <= 1 and param_count <= 1
+                local accepts_slice = wants_slice
+                    and (
+                        signature:find("Range", 1, true)
+                        or signature:find("..", 1, true)
+                        or param_count > 1
+                    )
+                if accepts_index or accepts_slice then
+                    operator_return_type = display_type_name_local(return_type)
+                    append_debug_log(
+                        ("[infer_rhs_index] operator_hit=%s signature=%s return_type=%s"):format(
+                            tostring(sym.fqname or sym.id),
+                            tostring(signature),
+                            tostring(operator_return_type)
+                        )
+                    )
+                    break
+                end
+            end
+        end
+
+        if operator_return_type then
+            return operator_return_type
+        end
+
+        if receiver_base == "String" then
+            if wants_slice then
+                append_debug_log("[infer_rhs_index] string_slice_fallback=String")
+                return "String"
+            end
+            local get_sym = find_member_on_type(receiver_base, "get")
+            if get_sym then
+                local callable = get_callable(get_sym)
+                local return_type = as_string(callable.return_type) or as_string(get_sym.return_type)
+                local display = display_type_name_local(return_type)
+                append_debug_log(
+                    ("[infer_rhs_index] string_get_fallback=%s return_type=%s"):format(
+                        tostring(get_sym.fqname or get_sym.id),
+                        tostring(display)
+                    )
+                )
+                if display then
+                    return display
+                end
+            end
+        end
+
+        append_debug_log("[infer_rhs_index] no_match")
+        return nil
+    end
+
+    local indexed_type = indexed_expr_return_type(rhs)
+    if indexed_type then
+        return indexed_type
+    end
+
     local direct_type = rhs:match("^([%w_%.]+)$")
     if direct_type and direct_type:match("^[A-Z]") then
         return sanitize_type_name(direct_type)
@@ -2641,6 +3409,31 @@ local function infer_type_from_rhs(rhs)
 
     local callee = rhs:match("^([%w_%.]+)%b()$")
     if callee then
+        if callee:match("^[A-Z]") then
+            local init_sym = find_constructor_symbol(callee)
+            if init_sym then
+                return sanitize_type_name(callee)
+            end
+        end
+        local receiver, member = callee:match("^(.-)%.([%w_]+)$")
+        if receiver and member then
+            local receiver_type = nil
+            if looks_like_api_symbol(receiver) then
+                receiver_type = sanitize_type_name(receiver)
+            elseif infer_local_variable_type then
+                receiver_type = infer_local_variable_type(receiver)
+            end
+            if receiver_type then
+                local member_sym = find_member_on_type(receiver_type, member)
+                if member_sym then
+                    local callable = get_callable(member_sym)
+                    local return_type = as_string(callable.return_type) or as_string(member_sym.return_type)
+                    if return_type and return_type ~= "" then
+                        return sanitize_type_name(return_type)
+                    end
+                end
+            end
+        end
         local sym = best_symbol_for_query(callee)
         if sym then
             local callable = get_callable(sym)
@@ -2654,6 +3447,21 @@ local function infer_type_from_rhs(rhs)
     return nil
 end
 
+local function display_type_name(type_name)
+    type_name = trim(as_string(type_name))
+    if not type_name or type_name == "" then
+        return nil
+    end
+    local nullable_prefix = type_name:match("^%?")
+    type_name = type_name:gsub("[`%s]", "")
+    type_name = type_name:gsub("[%?%!%[%]]+$", "")
+    type_name = type_name:match("([%w_%.<>%[%],]+)$") or type_name
+    if nullable_prefix and not type_name:match("^%?") then
+        type_name = "?" .. type_name
+    end
+    return type_name ~= "" and type_name or nil
+end
+
 sanitize_type_name = function(type_name)
     type_name = as_string(type_name)
     if not type_name or type_name == "" then
@@ -2664,6 +3472,9 @@ sanitize_type_name = function(type_name)
     type_name = type_name:gsub("<.*>$", "")
     type_name = type_name:gsub("[%?%!%[%]]+$", "")
     type_name = type_name:match("([%w_%.]+)$") or type_name
+    if type_name == "Invalid" then
+        return nil
+    end
     return type_name ~= "" and type_name or nil
 end
 
@@ -2711,7 +3522,7 @@ local function lsp_hover_lines_at(line_nr, col0)
     end
 end
 
-local function infer_receiver_type_from_lsp(receiver, receiver_end_col1)
+infer_receiver_type_from_lsp = function(receiver, receiver_end_col1)
     receiver = as_string(receiver)
     if not receiver or receiver == "" or not receiver_end_col1 then
         return nil
@@ -2734,7 +3545,247 @@ local function infer_receiver_type_from_lsp(receiver, receiver_end_col1)
     end
 end
 
-local function infer_local_variable_type(varname)
+local function parameter_type_from_signature_line(line, varname)
+    line = as_string(line)
+    varname = trim(varname)
+    if not line or line == "" or not varname or varname == "" then
+        return nil
+    end
+
+    local params_text = line:match("func%s+[%w_%.<>]+%s*%((.*)%)")
+        or line:match("init%s*%((.*)%)")
+    if not params_text then
+        return nil
+    end
+
+    for _, part in ipairs(split_top_level_csv(params_text) or {}) do
+        local piece = trim(part)
+        if piece then
+            local name, ptype = piece:match("^([%w_]+)!?%s*:%s*([%w_%.<>%[%]%?!]+)")
+            if name == varname then
+                append_debug_log(
+                    ("[infer_local] var=%s param_hit=%s line=%s"):format(
+                        tostring(varname),
+                        tostring(ptype),
+                        tostring(line)
+                    )
+                )
+                return display_type_name(ptype)
+            end
+        end
+    end
+end
+
+local function declared_type_from_line_raw(line, varname)
+    line = as_string(line)
+    varname = as_string(varname)
+    if not line or not varname or varname == "" then
+        return nil
+    end
+
+    local patterns = {
+        "^%s*let%s+" .. vim.pesc(varname) .. "%s*:%s*([^=]+)",
+        "^%s*var%s+" .. vim.pesc(varname) .. "%s*:%s*([^=]+)",
+        "^%s*const%s+" .. vim.pesc(varname) .. "%s*:%s*([^=]+)",
+    }
+    for _, pattern in ipairs(patterns) do
+        local declared = trim(line:match(pattern))
+        if declared then
+            return declared
+        end
+    end
+end
+
+local function option_inner_type(type_name)
+    type_name = trim(as_string(type_name))
+    if not type_name then
+        return nil
+    end
+
+    local generic = trim(type_name:match("^[%w_%.]+%s*<(.+)>$"))
+    if generic and (type_name:match("^Option%s*<") or type_name:match("^.*%.Option%s*<")) then
+        return generic
+    end
+    if type_name:match("^%?") then
+        return trim(type_name:sub(2))
+    end
+end
+
+local function infer_pattern_binding_type(bufnr, line_nr, varname)
+    varname = as_string(varname)
+    if not varname or varname == "" then
+        return nil
+    end
+
+    for lnum = line_nr, 1, -1 do
+        local line = vim.api.nvim_buf_get_lines(bufnr, lnum - 1, lnum, false)[1] or ""
+        local some_pat = "^%s*case%s+Some%s*%(%s*" .. vim.pesc(varname) .. "%s*%)"
+        if line:match(some_pat) then
+            local match_expr = nil
+            for back = lnum - 1, 1, -1 do
+                local prev = vim.api.nvim_buf_get_lines(bufnr, back - 1, back, false)[1] or ""
+                match_expr = trim(prev:match("^%s*match%s*%((.+)%)%s*{?"))
+                if match_expr then
+                    break
+                end
+            end
+
+            append_debug_log(
+                ("[infer_pattern] var=%s line=%d match_expr=%s"):format(
+                    tostring(varname),
+                    lnum,
+                    tostring(match_expr)
+                )
+            )
+
+            if match_expr then
+                local raw_scrutinee_type = nil
+                if match_expr:match("^[%w_]+$") then
+                    for back = lnum - 1, 1, -1 do
+                        local prev = vim.api.nvim_buf_get_lines(bufnr, back - 1, back, false)[1] or ""
+                        raw_scrutinee_type = declared_type_from_line_raw(prev, match_expr)
+                        if raw_scrutinee_type then
+                            break
+                        end
+                    end
+                end
+
+                local scrutinee_type = raw_scrutinee_type
+                    or infer_local_variable_type(match_expr)
+                    or infer_type_from_rhs(match_expr)
+                local inner = option_inner_type(scrutinee_type)
+
+                append_debug_log(
+                    ("[infer_pattern] var=%s scrutinee_type=%s inner=%s"):format(
+                        tostring(varname),
+                        tostring(scrutinee_type),
+                        tostring(inner)
+                    )
+                )
+
+                if inner then
+                    return display_type_name(inner)
+                end
+            end
+        end
+    end
+end
+
+local function infer_match_scrutinee_type(bufnr, line_nr)
+    for back = line_nr - 1, 1, -1 do
+        local prev = vim.api.nvim_buf_get_lines(bufnr, back - 1, back, false)[1] or ""
+        local match_expr = trim(prev:match("^%s*match%s*%((.+)%)%s*{?"))
+        if match_expr then
+            local raw_scrutinee_type = nil
+            if match_expr:match("^[%w_]+$") then
+                for scan = back - 1, 1, -1 do
+                    local decl = vim.api.nvim_buf_get_lines(bufnr, scan - 1, scan, false)[1] or ""
+                    raw_scrutinee_type = declared_type_from_line_raw(decl, match_expr)
+                    if raw_scrutinee_type then
+                        break
+                    end
+                end
+            end
+            return match_expr, raw_scrutinee_type or infer_local_variable_type(match_expr) or infer_type_from_rhs(match_expr)
+        end
+    end
+    return nil, nil
+end
+
+local function pattern_constructor_symbol_for_cursor()
+    local ident = cursor_identifier() or vim.fn.expand("<cword>")
+    if ident ~= "None" and ident ~= "Some" then
+        return nil
+    end
+
+    local bufnr = vim.api.nvim_get_current_buf()
+    local line_nr = vim.api.nvim_win_get_cursor(0)[1]
+    local line = vim.api.nvim_buf_get_lines(bufnr, line_nr - 1, line_nr, false)[1] or ""
+    if not line:match("^%s*case%s+" .. vim.pesc(ident)) then
+        return nil
+    end
+
+    local match_expr, scrutinee_type = infer_match_scrutinee_type(bufnr, line_nr)
+    local base = scrutinee_type and sanitize_type_name(scrutinee_type) or nil
+    append_debug_log(
+        ("[pattern_ctor] ident=%s line=%d match_expr=%s scrutinee_type=%s base=%s"):format(
+            tostring(ident),
+            line_nr,
+            tostring(match_expr),
+            tostring(scrutinee_type),
+            tostring(base)
+        )
+    )
+
+    if base == "Option" then
+        local sym = find_exact_symbol({ module = "std.core", member = "Option", kind = "enum" })
+            or find_exact_symbol({ module = "std.core", member = "Option" })
+            or exact_symbol_for_query("std.core.Option")
+            or best_type_symbol_for_query("std.core.Option")
+            or exact_symbol_for_query("Option")
+            or best_type_symbol_for_query("Option")
+        append_debug_log("[pattern_ctor] resolved=" .. tostring(sym and (sym.fqname or sym.id) or nil))
+        return sym
+    end
+    return nil
+end
+
+local function source_symbol_for_cursor()
+    load_index()
+    local path = normalize_path(vim.api.nvim_buf_get_name(0))
+    local ident = cursor_identifier() or vim.fn.expand("<cword>")
+    if not path or not ident or ident == "" then
+        return nil
+    end
+
+    local module_guess = nil
+    local std_mod = path:match("/stdlib/libs/std/(.+)/[^/]+%.cj$")
+    if std_mod then
+        module_guess = "std." .. std_mod:gsub("/", ".")
+    end
+    if module_guess then
+        local exact = find_exact_symbol({ module = module_guess, member = ident })
+        append_debug_log("[source_cursor] ident=" .. tostring(ident) .. " module_guess=" .. tostring(module_guess) .. " exact=" .. tostring(exact and (exact.fqname or exact.id) or nil))
+        if exact then
+            return exact
+        end
+    end
+
+    local symbols = state.by_source and state.by_source[path]
+    if type(symbols) ~= "table" or #symbols == 0 then
+        return nil
+    end
+
+    local line1 = vim.api.nvim_win_get_cursor(0)[1]
+    local matches = {}
+    for _, sym in ipairs(symbols) do
+        local name = normalize(symbol_name(sym))
+        if name == normalize(ident) then
+            matches[#matches + 1] = sym
+        end
+    end
+
+    if #matches == 0 then
+        return nil
+    end
+
+    table.sort(matches, function(a, b)
+        local sa = as_table(a.source) or {}
+        local sb = as_table(b.source) or {}
+        local la = math.abs((tonumber(sa.line) or 1) - line1)
+        local lb = math.abs((tonumber(sb.line) or 1) - line1)
+        if la ~= lb then
+            return la < lb
+        end
+        return (as_string(a.fqname) or as_string(a.id) or "") < (as_string(b.fqname) or as_string(b.id) or "")
+    end)
+
+    local sym = matches[1]
+    append_debug_log("[source_cursor] ident=" .. tostring(ident) .. " resolved=" .. tostring(sym and (sym.fqname or sym.id) or nil))
+    return sym
+end
+
+infer_local_variable_type = function(varname)
     varname = as_string(varname)
     if not varname or varname == "" then
         return nil
@@ -2746,22 +3797,47 @@ local function infer_local_variable_type(varname)
     for line_nr = current_line, 1, -1 do
         local line = vim.api.nvim_buf_get_lines(bufnr, line_nr - 1, line_nr, false)[1] or ""
 
-        local typed_pattern = "%f[%w_](let|var|const)%f[^%w_]%s+" .. vim.pesc(varname) .. "%s*:%s*([%w_%.]+)"
-        local declared_type = line:match(typed_pattern)
+        local declared_type = declared_type_from_line_raw(line, varname)
         if declared_type and declared_type ~= "" then
-            return sanitize_type_name(declared_type)
+            append_debug_log(("[infer_local] var=%s line=%d declared=%s"):format(varname, line_nr, tostring(declared_type)))
+            return display_type_name(declared_type)
         end
 
-        local assign_pattern = "%f[%w_](let|var|const)%f[^%w_]%s+" .. vim.pesc(varname) .. "%s*=%s*(.+)$"
-        local rhs = line:match(assign_pattern)
-        if rhs then
-            local inferred = infer_type_from_rhs(rhs)
-            if inferred then
-                return inferred
+        local pattern_type = infer_pattern_binding_type(bufnr, line_nr, varname)
+        if pattern_type then
+            append_debug_log(("[infer_local] var=%s line=%d pattern=%s"):format(varname, line_nr, tostring(pattern_type)))
+            return pattern_type
+        end
+
+        local param_type = parameter_type_from_signature_line(line, varname)
+        if param_type then
+            return param_type
+        end
+
+        local assign_patterns = {
+            "^%s*let%s+" .. vim.pesc(varname) .. "%s*=%s*(.+)$",
+            "^%s*var%s+" .. vim.pesc(varname) .. "%s*=%s*(.+)$",
+            "^%s*const%s+" .. vim.pesc(varname) .. "%s*=%s*(.+)$",
+        }
+        for _, pattern in ipairs(assign_patterns) do
+            local rhs = line:match(pattern)
+            if rhs then
+                local ctor_name = rhs:match("^%s*([A-Z][%w_%.]*)%s*%b()")
+                append_debug_log(("[infer_local] var=%s line=%d rhs=%s ctor=%s"):format(varname, line_nr, tostring(rhs), tostring(ctor_name)))
+                if ctor_name and find_constructor_symbol(ctor_name) then
+                    append_debug_log(("[infer_local] var=%s line=%d ctor_hit=%s"):format(varname, line_nr, tostring(ctor_name)))
+                    return sanitize_type_name(ctor_name)
+                end
+                local inferred = infer_type_from_rhs(rhs)
+                if inferred then
+                    append_debug_log(("[infer_local] var=%s line=%d inferred=%s"):format(varname, line_nr, tostring(inferred)))
+                    return inferred
+                end
             end
         end
     end
 
+    append_debug_log(("[infer_local] var=%s no_match"):format(varname))
     return nil
 end
 
@@ -2781,22 +3857,48 @@ local function find_symbol_from_receiver_context()
     local receiver = table.concat(parts, ".", 1, #parts - 1)
 
     local receiver_type = nil
+    local lsp_type = nil
     if looks_like_api_symbol(receiver) then
         receiver_type = receiver
     else
         local receiver_end_col1 = (ctx and ctx.start_col or 1) + #receiver - 1
-        receiver_type = infer_receiver_type_from_lsp(receiver, receiver_end_col1)
+        lsp_type = infer_receiver_type_from_lsp(receiver, receiver_end_col1)
+        receiver_type = lsp_type
+    end
+
+    local local_type = nil
+    if not receiver_type or receiver_type == "" then
+        local_type = infer_local_variable_type(receiver)
+        receiver_type = local_type
     end
 
     if not receiver_type or receiver_type == "" then
-        receiver_type = infer_local_variable_type(receiver)
-    end
-
-    if not receiver_type or receiver_type == "" then
+        append_debug_log(
+            ("[receiver] expr=%s receiver=%s member=%s lsp_type=%s local_type=%s resolved=nil"):format(
+                tostring(expr),
+                tostring(receiver),
+                tostring(member),
+                tostring(lsp_type),
+                tostring(local_type),
+                tostring(nil)
+            )
+        )
         return nil
     end
 
-    return find_member_on_type(receiver_type, member)
+    local resolved = find_member_on_type(receiver_type, member)
+    append_debug_log(
+        ("[receiver] expr=%s receiver=%s member=%s lsp_type=%s local_type=%s chosen_type=%s resolved=%s"):format(
+            tostring(expr),
+            tostring(receiver),
+            tostring(member),
+            tostring(lsp_type),
+            tostring(local_type),
+            tostring(receiver_type),
+            tostring(resolved and (resolved.fqname or resolved.id) or nil)
+        )
+    )
+    return resolved
 end
 
 function M.debug_receiver_context()
@@ -2848,40 +3950,113 @@ function M.find_symbol_for_cursor()
         return contextual
     end
 
+    local pattern_ctor = pattern_constructor_symbol_for_cursor()
+    if pattern_ctor then
+        return pattern_ctor
+    end
+
+    local source_sym = source_symbol_for_cursor()
+    if source_sym then
+        return source_sym
+    end
+
+    local in_call_position = cursor_in_call_like_position()
+
     local candidates = extract_symbol_candidates()
     for index, candidate in ipairs(candidates) do
         if looks_like_api_symbol(candidate) or index > 1 then
+            if in_call_position and candidate:match("^[A-Z]") then
+                local init_sym = find_constructor_symbol(candidate)
+                if init_sym then
+                    return init_sym
+                end
+            end
             local sym = M.find_symbol(candidate)
             if sym then
+                if in_call_position and is_type_kind(as_string(sym.kind)) then
+                    local init_sym = find_constructor_symbol(candidate)
+                    if init_sym then
+                        return init_sym
+                    end
+                end
                 return sym
             end
         end
     end
 
-    if cursor_in_local_binding_position() then
+    local ident = cursor_identifier() or vim.fn.expand("<cword>")
+    if cursor_in_local_binding_position() or cursor_in_pattern_binding_position() then
+        local inferred_type = infer_local_variable_type(ident)
+        if inferred_type then
+            local inferred_base = sanitize_type_name(inferred_type)
+            append_debug_log(("[cursor_local] ident=%s inferred=%s base=%s"):format(tostring(ident), tostring(inferred_type), tostring(inferred_base)))
+            local inferred_sym = (inferred_base and (best_type_symbol_for_query(inferred_base) or best_symbol_for_query(inferred_base)))
+                or best_type_symbol_for_query(inferred_type)
+                or best_symbol_for_query(inferred_type)
+            if inferred_sym then
+                return inferred_sym
+            end
+        end
         return nil
     end
 
-    local ident = cursor_identifier() or vim.fn.expand("<cword>")
     if not looks_like_api_symbol(ident) then
-        if cursor_in_call_like_position() then
+        local inferred_type = infer_local_variable_type(ident)
+        if inferred_type then
+            local inferred_base = sanitize_type_name(inferred_type)
+            append_debug_log(("[cursor_local] ident=%s inferred=%s base=%s"):format(tostring(ident), tostring(inferred_type), tostring(inferred_base)))
+            local inferred_sym = (inferred_base and (best_type_symbol_for_query(inferred_base) or best_symbol_for_query(inferred_base)))
+                or best_type_symbol_for_query(inferred_type)
+                or best_symbol_for_query(inferred_type)
+            if inferred_sym then
+                return inferred_sym
+            end
+        end
+        if in_call_position then
             return unique_symbol_for_query(ident)
         end
         return nil
     end
 
+    if in_call_position and ident:match("^[A-Z]") then
+        local init_sym = find_constructor_symbol(ident)
+        if init_sym then
+            return init_sym
+        end
+    end
+
     local sym = M.find_symbol(ident)
     if sym then
+        if in_call_position and is_type_kind(as_string(sym.kind)) then
+            local init_sym = find_constructor_symbol(ident)
+            if init_sym then
+                return init_sym
+            end
+        end
         return sym
     end
 
     return nil
 end
 
+function M.inferred_type_for_cursor()
+    local ident = cursor_identifier() or vim.fn.expand("<cword>")
+    if not ident or ident == "" then
+        return nil
+    end
+    local inferred_type = infer_local_variable_type(ident)
+    append_debug_log(("[cursor_type] ident=%s inferred=%s"):format(tostring(ident), tostring(inferred_type)))
+    return inferred_type
+end
+
 function M.cursor_has_member_access()
     local ctx = extract_symbol_context()
     local expr = ctx and ctx.expr or nil
     return expr ~= nil and expr:find(".", 1, true) ~= nil
+end
+
+function M.cursor_in_local_like_position()
+    return cursor_in_local_binding_position() or cursor_in_pattern_binding_position()
 end
 
 function M.should_try_lsp_hover()
@@ -2892,7 +4067,7 @@ function M.should_try_lsp_hover()
         end
     end
 
-    if cursor_in_local_binding_position() then
+    if M.cursor_in_local_like_position() then
         return false
     end
 
@@ -3067,7 +4242,105 @@ function M.show_symbol(sym)
         max_width = 100,
         max_height = 30,
     })
-    set_preview_state(bufnr, winid)
+    set_preview_state(bufnr, winid, nil)
+end
+
+function M.hover_markdown_for_symbol(sym)
+    if not sym then
+        return nil
+    end
+    append_debug_log(
+        "[hover_doc] start fqname="
+            .. tostring(sym.fqname or sym.id)
+            .. " signature="
+            .. tostring(sym.signature)
+            .. " summary_short="
+            .. tostring(sym.summary_short_md)
+            .. " module="
+            .. tostring(sym.module)
+            .. " url="
+            .. tostring(symbol_url(sym))
+    )
+    local lines = flatten_lines(build_hover_markdown(sym))
+    if #lines > 0 then
+        append_debug_log("[hover_doc] built lines=" .. tostring(#lines))
+        return lines
+    end
+
+    local fallback = {}
+    local title = trim(as_string(sym.signature))
+        or trim(as_string(sym.signature_short))
+        or trim(as_string(sym.qualified_title))
+        or trim(as_string(sym.page_title))
+        or trim(as_string(sym.display))
+        or trim(as_string(sym.fqname))
+        or trim(as_string(sym.id))
+    local module_name = trim(as_string(sym.module))
+    local summary = trim(as_string(sym.summary_short_md) or as_string(sym.summary_md))
+    local url = symbol_url(sym)
+    local doc_link = format_link("查看文档", url)
+
+    if title then
+        code_fence(fallback, title)
+    end
+    if summary then
+        table.insert(fallback, summary)
+        table.insert(fallback, "")
+    end
+    if module_name then
+        table.insert(fallback, "`" .. module_name .. "`")
+        table.insert(fallback, "")
+    end
+    if doc_link then
+        table.insert(fallback, doc_link)
+        table.insert(fallback, "")
+    end
+
+    append_debug_log("[hover_doc] hard_fallback title=" .. tostring(title) .. " lines=" .. tostring(#fallback))
+    return fallback
+end
+
+function M.open_preview(lines, opts)
+    lines = as_list(lines)
+    opts = as_table(opts) or {}
+    local action = as_table(opts.action)
+    append_debug_log(("[preview] open lines=%d action=%s"):format(#lines, tostring(action and action.sym and (action.sym.fqname or action.sym.id) or nil)))
+    local bufnr, winid = vim.lsp.util.open_floating_preview(lines, "markdown", {
+        border = "rounded",
+        max_width = 100,
+        max_height = 30,
+    })
+    set_preview_state(bufnr, winid, action)
+    if action and bufnr and vim.api.nvim_buf_is_valid(bufnr) then
+        vim.keymap.set("n", "<CR>", function()
+            M.follow_preview_action()
+        end, {
+            buffer = bufnr,
+            silent = true,
+            nowait = true,
+            desc = "Open Cangjie Docs Inner Type",
+        })
+    end
+    return bufnr, winid
+end
+
+function M.follow_preview_action()
+    local _, _, action = get_preview_state()
+    action = as_table(action)
+    if not action then
+        return false
+    end
+    local sym = action.sym
+    if sym then
+        M.show_symbol(sym)
+        return true
+    end
+    local lines = as_list(action.lines)
+    if #lines > 0 then
+        M.open_preview(lines, action.next and { action = action.next } or nil)
+        return true
+    end
+    return false
 end
 
 function M.scroll_preview(key)
@@ -3215,7 +4488,7 @@ function M.find_symbol_for_completion_item(item)
     return nil
 end
 
-function M.documentation_for_completion_item(item)
+function M.documentation_for_completion_item(item, opts)
     local sym = M.find_symbol_for_completion_item(item)
     append_debug_log("[completion_doc] symbol=" .. tostring(sym and (sym.fqname or sym.id) or nil))
     if not sym then
@@ -3223,18 +4496,8 @@ function M.documentation_for_completion_item(item)
     end
     return {
         kind = "markdown",
-        value = table.concat(flatten_lines(build_completion_markdown(sym)), "\n"),
+        value = table.concat(flatten_lines(build_completion_markdown(sym, opts)), "\n"),
     }, sym
-end
-
-function M.hover_markdown_for_symbol(sym)
-    if not sym then
-        return nil
-    end
-    return {
-        kind = "markdown",
-        value = table.concat(flatten_lines(build_hover_markdown(sym)), "\n"),
-    }
 end
 
 function M.signature_help_for_symbol(sym)
@@ -3259,8 +4522,42 @@ function M.index_path()
     return configured_index_path()
 end
 
+function M.index_paths()
+    return configured_index_paths()
+end
+
+function M.source_names()
+    local names = {}
+    for name, _ in pairs(configured_source_groups()) do
+        table.insert(names, name)
+    end
+    table.sort(names)
+    return names
+end
+
+function M.current_source_name()
+    return configured_source_name()
+end
+
 function M.index_source_url()
     return configured_source_url()
+end
+
+function M.index_source_urls()
+    return configured_source_urls()
+end
+
+function M.set_source(name)
+    name = trim(name)
+    if not name then
+        return false, "未提供 docs source 名称"
+    end
+    if not configured_source_groups()[name] then
+        return false, "未知 docs source: " .. name
+    end
+    vim.g.cangjie_doc_source = name
+    M.reload()
+    return true, name
 end
 
 function M.reload()
@@ -3276,98 +4573,157 @@ end
 
 function M.sync_index(opts, callback)
     opts = as_table(opts) or {}
-    local url = trim(opts.url) or trim(configured_source_url())
-    if not url then
+    local urls = ensure_string_list(opts.urls)
+    local single_url = trim(opts.url)
+    if #urls == 0 and single_url then
+        urls = { single_url }
+    end
+    if #urls == 0 then
+        urls = configured_source_urls()
+    end
+    if #urls == 0 then
         if callback then
-            callback(false, "未配置 Cangjie docs URL，请设置 vim.g.cangjie_doc_index_url 或 CANGJIE_DOC_INDEX_URL")
+            callback(false, "未配置 Cangjie docs URL，请设置 vim.g.cangjie_doc_index_url / vim.g.cangjie_doc_index_urls")
             return
         end
-        return false, "未配置 Cangjie docs URL，请设置 vim.g.cangjie_doc_index_url 或 CANGJIE_DOC_INDEX_URL"
+        return false, "未配置 Cangjie docs URL，请设置 vim.g.cangjie_doc_index_url / vim.g.cangjie_doc_index_urls"
     end
 
-    local target = normalize_path(trim(opts.path) or configured_sync_path())
-    if not target then
+    local targets = resolve_sync_targets(urls, opts)
+    if #targets == 0 then
         if callback then
             callback(false, "未配置 Cangjie docs 本地路径")
             return
         end
         return false, "未配置 Cangjie docs 本地路径"
     end
-
-    local target_dir = vim.fs.dirname(target)
-    if target_dir and target_dir ~= "" then
-        vim.fn.mkdir(target_dir, "p")
-    end
-
-    local tmp = target .. ".tmp"
-    local cmd = { "curl", "-fsSL", url, "-o", tmp }
-    if callback then
-        vim.system(cmd, { text = true }, function(result)
-            vim.schedule(function()
-                if result.code ~= 0 then
-                    os.remove(tmp)
-                    local err = trim(result.stderr) or trim(result.stdout) or ("curl failed: " .. tostring(result.code))
-                    callback(false, err)
-                    return
-                end
-
-                local text = read_file(tmp)
-                if not text then
-                    os.remove(tmp)
-                    callback(false, "下载完成但无法读取临时文件")
-                    return
-                end
-
-                local ok, data = pcall(vim.json.decode, text)
-                if not ok or type(data) ~= "table" or type(data.symbols) ~= "table" then
-                    os.remove(tmp)
-                    callback(false, "下载的 docs-index.json 不是有效的 format=4 索引")
-                    return
-                end
-
-                if not write_file(target, text) then
-                    os.remove(tmp)
-                    callback(false, "无法写入本地 docs-index 缓存: " .. target)
-                    return
-                end
-                os.remove(tmp)
-
-                vim.g.cangjie_doc_index = target
-                M.reload()
-                callback(true, target)
-            end)
-        end)
-        return
-    end
-
-    local result = vim.system(cmd, { text = true }):wait()
-    if result.code ~= 0 then
-        os.remove(tmp)
-        local err = trim(result.stderr) or trim(result.stdout) or ("curl failed: " .. tostring(result.code))
+    if #targets ~= 1 and #targets ~= #urls then
+        local err = ("docs 源数量(%d)和目标路径数量(%d)不匹配"):format(#urls, #targets)
+        if callback then
+            callback(false, err)
+            return
+        end
         return false, err
     end
 
-    local text = read_file(tmp)
-    if not text then
-        os.remove(tmp)
-        return false, "下载完成但无法读取临时文件"
+    local function target_for(index)
+        return normalize_path(targets[index] or targets[1])
     end
 
-    local ok, data = pcall(vim.json.decode, text)
-    if not ok or type(data) ~= "table" or type(data.symbols) ~= "table" then
+    local function sync_one(url, target)
+        local target_dir = vim.fs.dirname(target)
+        if target_dir and target_dir ~= "" then
+            vim.fn.mkdir(target_dir, "p")
+        end
+
+        local tmp = target .. ".tmp"
+        local cmd = { "curl", "-fsSL", url, "-o", tmp }
+        local result = vim.system(cmd, { text = true }):wait()
+        if result.code ~= 0 then
+            os.remove(tmp)
+            local err = trim(result.stderr) or trim(result.stdout) or ("curl failed: " .. tostring(result.code))
+            return false, err
+        end
+
+        local text = read_file(tmp)
+        if not text then
+            os.remove(tmp)
+            return false, "下载完成但无法读取临时文件"
+        end
+
+        local ok, data = pcall(vim.json.decode, text)
+        if not ok or type(data) ~= "table" or type(data.symbols) ~= "table" then
+            os.remove(tmp)
+            return false, "下载的 docs-index.json 不是有效的 format=4 索引"
+        end
+
+        if not write_file(target, text) then
+            os.remove(tmp)
+            return false, "无法写入本地 docs-index 缓存: " .. target
+        end
         os.remove(tmp)
-        return false, "下载的 docs-index.json 不是有效的 format=4 索引"
+        return true, target
     end
 
-    if not write_file(target, text) then
-        os.remove(tmp)
-        return false, "无法写入本地 docs-index 缓存: " .. target
-    end
-    os.remove(tmp)
+    if callback then
+        local written = {}
 
-    vim.g.cangjie_doc_index = target
+        local function finish(ok, result)
+            vim.schedule(function()
+                callback(ok, result)
+            end)
+        end
+
+        local function sync_one_async(index)
+            if index > #urls then
+                vim.g.cangjie_doc_index = written[1]
+                vim.g.cangjie_doc_indexes = written
+                M.reload()
+                finish(true, #written == 1 and written[1] or table.concat(written, ", "))
+                return
+            end
+
+            local url = urls[index]
+            local target = target_for(index)
+            local target_dir = vim.fs.dirname(target)
+            if target_dir and target_dir ~= "" then
+                vim.fn.mkdir(target_dir, "p")
+            end
+
+            local tmp = target .. ".tmp"
+            local cmd = { "curl", "-fsSL", url, "-o", tmp }
+            vim.system(cmd, { text = true }, function(result)
+                vim.schedule(function()
+                    if result.code ~= 0 then
+                        os.remove(tmp)
+                        local err = trim(result.stderr) or trim(result.stdout) or ("curl failed: " .. tostring(result.code))
+                        finish(false, err)
+                        return
+                    end
+
+                    local text = read_file(tmp)
+                    if not text then
+                        os.remove(tmp)
+                        finish(false, "下载完成但无法读取临时文件")
+                        return
+                    end
+
+                    local ok, data = pcall(vim.json.decode, text)
+                    if not ok or type(data) ~= "table" or type(data.symbols) ~= "table" then
+                        os.remove(tmp)
+                        finish(false, "下载的 docs-index.json 不是有效的 format=4 索引")
+                        return
+                    end
+
+                    if not write_file(target, text) then
+                        os.remove(tmp)
+                        finish(false, "无法写入本地 docs-index 缓存: " .. target)
+                        return
+                    end
+
+                    os.remove(tmp)
+                    table.insert(written, target)
+                    sync_one_async(index + 1)
+                end)
+            end)
+        end
+
+        sync_one_async(1)
+        return
+    end
+
+    local written = {}
+    for i, url in ipairs(urls) do
+        local ok, result = sync_one(url, target_for(i))
+        if not ok then
+            return false, result
+        end
+        table.insert(written, result)
+    end
+    vim.g.cangjie_doc_index = written[1]
+    vim.g.cangjie_doc_indexes = written
     M.reload()
-    return true, target
+    return true, #written == 1 and written[1] or table.concat(written, ", ")
 end
 
 function M.set_debug(enabled)

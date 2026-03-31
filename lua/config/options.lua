@@ -19,9 +19,24 @@ vim.g.cangjie_pseudo_inlay_hints = true
 vim.g.cangjie_pseudo_inlay_hints_hide_in_insert = true
 vim.g.cangjie_pseudo_inlay_hints_types = true
 vim.g.cangjie_pseudo_inlay_hints_parameters = false
+vim.g.cangjie_pseudo_inlay_hints_expression_parts = false
 vim.g.cangjie_pseudo_inlay_hints_type_mode = "hover"
 vim.g.cangjie_pseudo_inlay_hints_delay_ms = 150
 vim.g.cangjie_pseudo_inlay_hints_cursor_delay_ms = 500
 vim.g.cangjie_pseudo_inlay_hints_parameter_mode = "nested"
 --vim.g.cangjie_doc_index = "/home/elliot/Code/docs/output/std_api_zh/docs-index.json"
-vim.g.cangjie_doc_index_url = "https://955work.icu/dev/std/docs-index.json"
+vim.g.cangjie_doc_sources = {
+    dev = {
+        urls = {
+            "https://955work.icu/dev/std/docs-index.json",
+            "https://955work.icu/dev/stdx/docs-index.json",
+        },
+    },
+    nightly = {
+        urls = {
+            "https://955work.icu/nightly/std/docs-index.json",
+            "https://955work.icu/nightly/stdx/docs-index.json",
+        },
+    },
+}
+vim.g.cangjie_doc_source = "dev"

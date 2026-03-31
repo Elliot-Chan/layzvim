@@ -2,6 +2,17 @@ return {
   "catppuccin/nvim",
   lazy = true,
   name = "catppuccin",
+  init = function()
+    vim.api.nvim_create_autocmd("ColorScheme", {
+      callback = function()
+        vim.api.nvim_set_hl(0, "LspInlayHint", {
+          italic = true,
+          fg = "#7f849c",
+          bg = "NONE",
+        })
+      end,
+    })
+  end,
   opts = {
     integrations = {
       aerial = true,

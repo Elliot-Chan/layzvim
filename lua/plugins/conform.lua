@@ -4,26 +4,6 @@ return {
         opts = opts or {}
         opts.formatters = opts.formatters or {}
         opts.formatters_by_ft = opts.formatters_by_ft or {}
-        opts.format_on_save = opts.format_on_save
-            or function(bufnr)
-                local disabled_filetypes = {
-                    Cangjie = true,
-                }
-
-                if vim.g.auto_format == false then
-                    return
-                end
-
-                if vim.b[bufnr].auto_format == false then
-                    return
-                end
-
-                if disabled_filetypes[vim.bo[bufnr].filetype] then
-                    return
-                end
-
-                return { timeout_ms = 2000, lsp_format = "fallback" }
-            end
 
         -- 1) 解析 cjfmt 可执行路径：优先 CANGJIE_SDK_PATH/tools/bin/cjfmt，找不到就用 PATH 里的 cjfmt
         local sdk = vim.env.CANGJIE_SDK_PATH

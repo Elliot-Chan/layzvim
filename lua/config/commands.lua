@@ -152,6 +152,10 @@ api.nvim_create_user_command("CangjieLspCaps", function()
     load_cangjie_lsp_config()._codex_lsp_capabilities_info()
 end, { desc = "Show current Cangjie LSP method capabilities" })
 
+api.nvim_create_user_command("CangjieCompletionDebug", function()
+    load_cangjie_lsp_config()._codex_debug_completion_probe()
+end, { desc = "Probe Cangjie completion at current cursor" })
+
 api.nvim_create_user_command("CangjieLspProbe", function(opts)
     load_cangjie_lsp_config()._codex_lsp_probe(opts.args)
 end, {
@@ -258,16 +262,59 @@ end, {
 
 api.nvim_create_user_command("CangjieDocsInfo", function()
     local docs = require("cangjie_docs_index")
+    local paths = docs.index_paths and docs.index_paths() or { docs.index_path() }
+    local urls = docs.index_source_urls and docs.index_source_urls() or { docs.index_source_url() }
+    local source_names = docs.source_names and docs.source_names() or {}
     vim.notify(
         table.concat({
+            ("source=%s"):format(docs.current_source_name and (docs.current_source_name() or "default") or "default"),
+            ("sources=%s"):format(#source_names > 0 and table.concat(source_names, ", ") or "default"),
             ("index=%s"):format(docs.index_path()),
+            ("indexes=%s"):format(table.concat(paths, ", ")),
             ("source_url=%s"):format(docs.index_source_url() or "nil"),
+            ("source_urls=%s"):format(#urls > 0 and table.concat(urls, ", ") or "nil"),
             ("debug=%s"):format(docs.debug_enabled() and "on" or "off"),
         }, "\n"),
         vim.log.levels.INFO,
         { title = "Cangjie Docs" }
     )
 end, { desc = "Show Cangjie docs index path/source info" })
+
+api.nvim_create_user_command("CangjieDocsSource", function(opts)
+    local docs = require("cangjie_docs_index")
+    local action = trim_arg(opts.args)
+    if action == "" or action == "status" then
+        local current = docs.current_source_name and (docs.current_source_name() or "default") or "default"
+        local names = docs.source_names and docs.source_names() or {}
+        vim.notify(
+            table.concat({
+                ("current=%s"):format(current),
+                ("available=%s"):format(#names > 0 and table.concat(names, ", ") or "default"),
+            }, "\n"),
+            vim.log.levels.INFO,
+            { title = "Cangjie Docs Source" }
+        )
+        return
+    end
+
+    local ok, result = docs.set_source(action)
+    if ok then
+        vim.notify("Cangjie docs source: " .. result, vim.log.levels.INFO, { title = "Cangjie Docs" })
+    else
+        vim.notify(result, vim.log.levels.WARN, { title = "Cangjie Docs" })
+    end
+end, {
+    desc = "Show or switch current Cangjie docs source",
+    nargs = "?",
+    complete = function()
+        local docs = require("cangjie_docs_index")
+        local out = { "status" }
+        for _, name in ipairs(docs.source_names and docs.source_names() or {}) do
+            table.insert(out, name)
+        end
+        return out
+    end,
+})
 
 api.nvim_create_user_command("CangjieDocsDebug", function(opts)
     local docs = require("cangjie_docs_index")

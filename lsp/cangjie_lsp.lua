@@ -42,6 +42,58 @@ local function trim_text(value)
     return value ~= "" and value or nil
 end
 
+local function sanitize_lookup_type_name(type_name)
+    type_name = trim_text(type_name)
+    if not type_name then
+        return nil
+    end
+    type_name = type_name:gsub("[`%s]", "")
+    type_name = type_name:gsub("<.*>$", "")
+    type_name = type_name:gsub("[%?%!%[%]]+$", "")
+    type_name = type_name:match("([%w_%.]+)$") or type_name
+    return type_name ~= "" and type_name or nil
+end
+
+local function inferred_inner_type(type_name)
+    type_name = trim_text(type_name)
+    if not type_name then
+        return nil
+    end
+    local option_inner = type_name:match("^%??Option%s*<%s*(.+)%s*>$")
+    if option_inner and option_inner ~= "" then
+        return trim_text(option_inner)
+    end
+    local nullable_inner = type_name:match("^%?%s*(.+)$")
+    if nullable_inner and nullable_inner ~= "" then
+        return trim_text(nullable_inner)
+    end
+    return nil
+end
+
+local function inferred_desugared_type(type_name)
+    type_name = trim_text(type_name)
+    if not type_name then
+        return nil
+    end
+    local nullable_inner = type_name:match("^%?%s*(.+)$")
+    if nullable_inner and nullable_inner ~= "" then
+        return ("Option<%s>"):format(trim_text(nullable_inner) or nullable_inner)
+    end
+    return nil
+end
+
+local function is_decorated_inferred_type(type_name, base_type)
+    type_name = trim_text(type_name)
+    base_type = trim_text(base_type)
+    if not type_name or not base_type then
+        return false
+    end
+    if type_name ~= base_type then
+        return true
+    end
+    return false
+end
+
 local function append_debug_log(message)
     local docs = get_docs_index()
     if not docs.debug_enabled or not docs.debug_enabled() then
@@ -73,10 +125,55 @@ local function append_hierarchy_log(message)
     fd:close()
 end
 
+local function append_completion_log(message)
+    local ok, fd = pcall(io.open, "/tmp/cangjie_completion.log", "a")
+    if not ok or not fd then
+        return
+    end
+    fd:write(os.date("%H:%M:%S "), message, "\n")
+    fd:close()
+end
+
 local function get_blink()
     local ok, blink = pcall(require, "blink.cmp")
     if ok and blink then
         return blink
+    end
+end
+
+local function ensure_cangjie_blink_signature_guard()
+    if vim.g.cangjie_blink_signature_guard then
+        return
+    end
+
+    local ok, trigger = pcall(require, "blink.cmp.signature.trigger")
+    if not ok or not trigger then
+        return
+    end
+
+    vim.g.cangjie_blink_signature_guard = true
+
+    local original_show = trigger.show
+    local original_show_if = trigger.show_if_on_trigger_character
+
+    if type(original_show) == "function" then
+        trigger.show = function(opts)
+            if vim.bo.filetype == "Cangjie" and not (type(opts) == "table" and opts.force) then
+                append_completion_log("[signature_guard] skip trigger.show for Cangjie")
+                return
+            end
+            return original_show(opts)
+        end
+    end
+
+    if type(original_show_if) == "function" then
+        trigger.show_if_on_trigger_character = function(...)
+            if vim.bo.filetype == "Cangjie" then
+                append_completion_log("[signature_guard] skip show_if_on_trigger_character for Cangjie")
+                return
+            end
+            return original_show_if(...)
+        end
     end
 end
 
@@ -189,7 +286,7 @@ local function ensure_cangjie_inlay_autocmds(bufnr)
             end
         end,
     })
-    vim.api.nvim_create_autocmd({ "BufEnter", "TextChanged", "TextChangedI" }, {
+    vim.api.nvim_create_autocmd({ "BufEnter", "TextChanged" }, {
         group = group,
         buffer = bufnr,
         callback = function()
@@ -231,7 +328,7 @@ local function ensure_cangjie_document_highlight_autocmds(client, bufnr)
     end
 
     local group = vim.api.nvim_create_augroup("cangjie_document_highlight_" .. bufnr, { clear = true })
-    vim.api.nvim_create_autocmd({ "CursorHold", "CursorHoldI" }, {
+    vim.api.nvim_create_autocmd("CursorHold", {
         group = group,
         buffer = bufnr,
         callback = function()
@@ -344,6 +441,285 @@ local function docs_from_lsp_locations(method)
             return sym
         end
     end
+end
+
+local function source_lines_for_path(path)
+    if type(path) ~= "string" or path == "" then
+        return nil
+    end
+    local current = vim.api.nvim_buf_get_name(0)
+    if current ~= "" and vim.fs.normalize(current) == vim.fs.normalize(path) then
+        return vim.api.nvim_buf_get_lines(0, 0, -1, false)
+    end
+    local ok, lines = pcall(vim.fn.readfile, path)
+    if ok and type(lines) == "table" then
+        return lines
+    end
+end
+
+local function strip_doc_comment_line(line)
+    line = type(line) == "string" and line or ""
+    line = line:gsub("^%s*///?%s?", "")
+    line = line:gsub("^%s*/%*+%s?", "")
+    line = line:gsub("^%s*%*%s?", "")
+    line = line:gsub("%s*%*/%s*$", "")
+    line = line:gsub("^/%s*$", "")
+    return trim_text(line) or ""
+end
+
+local function clean_source_signature_line(line)
+    line = trim_text(line)
+    if not line then
+        return nil
+    end
+    line = line:gsub("%s*{%s*$", "")
+    return trim_text(line)
+end
+
+local function looks_like_source_declaration(line)
+    line = trim_text(line)
+    if not line then
+        return false
+    end
+
+    if line:match("^@[A-Za-z_]") then
+        return true
+    end
+
+    local declaration = line
+    local stripped = line
+    local modifiers = {
+        "public",
+        "private",
+        "protected",
+        "internal",
+        "open",
+        "sealed",
+        "abstract",
+        "override",
+        "static",
+        "mut",
+        "foreign",
+        "unsafe",
+    }
+    while true do
+        local next_stripped = stripped
+        for _, modifier in ipairs(modifiers) do
+            local candidate = next_stripped:gsub("^" .. modifier .. "%s+", "", 1)
+            if candidate ~= next_stripped then
+                next_stripped = candidate
+                break
+            end
+        end
+        if next_stripped == stripped then
+            break
+        end
+        stripped = next_stripped
+    end
+    declaration = trim_text(stripped) or line
+
+    local matched = declaration:match("^func%s+")
+        or declaration:match("^init%s*%(")
+        or declaration:match("^class%s+")
+        or declaration:match("^struct%s+")
+        or declaration:match("^interface%s+")
+        or declaration:match("^enum%s+")
+        or declaration:match("^type%s+")
+        or declaration:match("^prop%s+")
+        or declaration:match("^var%s+")
+        or declaration:match("^let%s+")
+        or declaration:match("^const%s+")
+    append_debug_log(
+        ("[source_doc] declaration_check raw=%s stripped=%s matched=%s"):format(
+            tostring(line),
+            tostring(declaration),
+            tostring(matched ~= nil)
+        )
+    )
+    return matched ~= nil
+end
+
+local function render_source_doc_lines(signature, docs)
+    local out = {}
+    local param_count = 0
+    local throws_count = 0
+    if signature then
+        table.insert(out, "```cangjie")
+        table.insert(out, signature)
+        table.insert(out, "```")
+        table.insert(out, "")
+    end
+
+    local in_params = false
+    local in_throws = false
+    local function ensure_blank()
+        if #out > 0 and out[#out] ~= "" then
+            table.insert(out, "")
+        end
+    end
+
+    for _, raw in ipairs(docs or {}) do
+        local line = trim_text(raw) or ""
+        if line == "" then
+            if #out > 0 and out[#out] ~= "" then
+                table.insert(out, "")
+            end
+            in_params = false
+            in_throws = false
+        else
+            local param_name, param_desc = line:match("^@param%s+([%w_]+)%s+(.*)$")
+            local throws_name, throws_desc = line:match("^@throws%s+([%w_%.]+)%s+(.*)$")
+            if param_name then
+                if not in_params then
+                    ensure_blank()
+                    table.insert(out, "**参数：**")
+                    in_params = true
+                    in_throws = false
+                end
+                param_count = param_count + 1
+                table.insert(out, ("- `%s` — %s"):format(param_name, trim_text(param_desc) or ""))
+            elseif throws_name then
+                if not in_throws then
+                    ensure_blank()
+                    table.insert(out, "**可能抛出：**")
+                    in_throws = true
+                    in_params = false
+                end
+                throws_count = throws_count + 1
+                table.insert(out, ("- `%s` — %s"):format(throws_name, trim_text(throws_desc) or ""))
+            else
+                in_params = false
+                in_throws = false
+                table.insert(out, line)
+            end
+        end
+    end
+
+    while #out > 0 and out[#out] == "" do
+        table.remove(out)
+    end
+    append_debug_log(
+        ("[source_doc] render signature=%s lines=%d params=%d throws=%d"):format(
+            tostring(signature),
+            #out,
+            param_count,
+            throws_count
+        )
+    )
+    return out
+end
+
+local function source_doc_lines_from_path(path, line0)
+    local lines = source_lines_for_path(path)
+    if type(lines) ~= "table" then
+        append_debug_log("[source_doc] path_unreadable=" .. tostring(path))
+        return nil
+    end
+
+    local target = lines[(line0 or 0) + 1]
+    local signature = clean_source_signature_line(target)
+    if signature and not looks_like_source_declaration(signature) then
+        append_debug_log(
+            ("[source_doc] skip_non_declaration path=%s line=%d signature=%s"):format(
+                tostring(path),
+                (line0 or 0) + 1,
+                tostring(signature)
+            )
+        )
+        return nil
+    end
+    local idx = (line0 or 0)
+    if idx < 1 then
+        return nil
+    end
+
+    local docs = {}
+    local prev = lines[idx] or ""
+    if prev:match("^%s*//") then
+        append_debug_log(("[source_doc] style=line path=%s line=%d"):format(tostring(path), (line0 or 0) + 1))
+        while idx >= 1 do
+            local raw = lines[idx] or ""
+            if not raw:match("^%s*//") then
+                break
+            end
+            table.insert(docs, 1, strip_doc_comment_line(raw))
+            idx = idx - 1
+        end
+    elseif prev:match("%*/%s*$") then
+        append_debug_log(("[source_doc] style=block path=%s line=%d"):format(tostring(path), (line0 or 0) + 1))
+        local block = {}
+        while idx >= 1 do
+            local raw = lines[idx] or ""
+            table.insert(block, 1, strip_doc_comment_line(raw))
+            if raw:match("/%*") then
+                docs = block
+                break
+            end
+            idx = idx - 1
+        end
+    end
+
+    local has_content = false
+    for _, line in ipairs(docs) do
+        if type(line) == "string" and trim_text(line) then
+            has_content = true
+            break
+        end
+    end
+    if not has_content then
+        append_debug_log(
+            ("[source_doc] empty path=%s line=%d signature=%s"):format(
+                tostring(path),
+                (line0 or 0) + 1,
+                tostring(signature)
+            )
+        )
+        return nil
+    end
+    append_debug_log(
+        ("[source_doc] extracted path=%s line=%d signature=%s raw_lines=%d"):format(
+            tostring(path),
+            (line0 or 0) + 1,
+            tostring(signature),
+            #docs
+        )
+    )
+    return render_source_doc_lines(signature, docs)
+end
+
+local function source_doc_lines_from_locations(method)
+    if #current_clients_supporting(method) == 0 then
+        return nil
+    end
+
+    local params = make_position_params()
+    local results = vim.lsp.buf_request_sync(0, method, params, 500)
+    for _, location in ipairs(flatten_locations(results)) do
+        local uri = location.targetUri or location.uri
+        local range = location.targetSelectionRange or location.targetRange or location.range or {}
+        local start = range.start or {}
+        if uri and start.line then
+            local path = vim.uri_to_fname(uri)
+            local lines = source_doc_lines_from_path(path, start.line)
+            if lines then
+                append_debug_log("[K] source_doc_location=" .. tostring(path) .. ":" .. tostring(start.line + 1))
+                return lines
+            end
+        end
+    end
+end
+
+local function source_doc_lines_for_cursor()
+    local path = vim.api.nvim_buf_get_name(0)
+    if path == "" then
+        return nil
+    end
+    local line0 = vim.api.nvim_win_get_cursor(0)[1] - 1
+    local lines = source_doc_lines_from_path(path, line0)
+    if lines then
+        append_debug_log("[K] source_doc_cursor=" .. tostring(path) .. ":" .. tostring(line0 + 1))
+    end
+    return lines
 end
 
 local function docs_debug_from_lsp_locations(method)
@@ -667,6 +1043,59 @@ local function cangjie_lsp_capabilities_info()
     vim.notify(table.concat(lines, "\n"), vim.log.levels.INFO, { title = "Cangjie LSP Capabilities" })
 end
 
+local function debug_completion_probe()
+    local client = current_cangjie_client()
+    if not client then
+        vim.notify("Current buffer has no cangjie_lsp client", vim.log.levels.WARN, { title = "Cangjie Completion" })
+        return
+    end
+
+    local params = make_position_params()
+    params.context = {
+        triggerKind = vim.lsp.protocol.CompletionTriggerKind.TriggerCharacter,
+        triggerCharacter = ".",
+    }
+
+    local results = vim.lsp.buf_request_sync(0, "textDocument/completion", params, 1000)
+    local lines = {
+        ("declared=%s"):format(tostring(client.supports_method and client.supports_method("textDocument/completion", 0) or false)),
+        ("params=%s"):format(vim.inspect(params)),
+    }
+
+    if not results then
+        lines[#lines + 1] = "request=nil"
+        vim.notify(table.concat(lines, "\n"), vim.log.levels.WARN, { title = "Cangjie Completion" })
+        return
+    end
+
+    for _, res in pairs(results) do
+        local err = res and res.err or nil
+        local result = res and res.result or nil
+        if err then
+            lines[#lines + 1] = ("error.code=%s"):format(tostring(err.code))
+            lines[#lines + 1] = ("error.message=%s"):format(tostring(err.message))
+        else
+            lines[#lines + 1] = ("result.type=%s"):format(type(result))
+            if type(result) == "table" then
+                local items = vim.tbl_islist(result) and result or result.items
+                local count = type(items) == "table" and #items or 0
+                lines[#lines + 1] = ("items=%d"):format(count)
+                if count > 0 then
+                    local first = items[1]
+                    lines[#lines + 1] = ("first.label=%s"):format(tostring(first and first.label or nil))
+                    lines[#lines + 1] = ("first.kind=%s"):format(tostring(first and first.kind or nil))
+                    lines[#lines + 1] = ("first.detail=%s"):format(tostring(first and first.detail or nil))
+                end
+            else
+                lines[#lines + 1] = ("result=%s"):format(vim.inspect(result))
+            end
+        end
+        break
+    end
+
+    vim.notify(table.concat(lines, "\n"), vim.log.levels.INFO, { title = "Cangjie Completion" })
+end
+
 local function docs_from_current_hover()
     local docs = get_docs_index()
     local context = docs.current_cursor_context and docs.current_cursor_context() or nil
@@ -702,10 +1131,134 @@ local function hover_or_local_docs()
         return
     end
 
+    local inferred_type = docs.inferred_type_for_cursor and docs.inferred_type_for_cursor() or nil
+    append_debug_log("[K] inferred_type=" .. tostring(inferred_type))
+
     local_sym = docs.find_symbol_for_cursor()
     append_debug_log("[K] local_cursor_pre=" .. tostring(local_sym and (local_sym.fqname or local_sym.id) or nil))
+    if local_sym and not inferred_type then
+        docs.show_symbol(local_sym)
+        return
+    end
+
+    if inferred_type then
+        local inferred_base = sanitize_lookup_type_name(inferred_type)
+        local inferred_desugared = inferred_desugared_type(inferred_type)
+        local inferred_inner = inferred_inner_type(inferred_type)
+        local inferred_inner_sym = nil
+        append_debug_log("[K] inferred_type_base=" .. tostring(inferred_base))
+        append_debug_log("[K] inferred_type_desugared=" .. tostring(inferred_desugared))
+        local inferred_sym = nil
+        if inferred_base then
+            inferred_sym = docs.find_symbol and docs.find_symbol(inferred_base) or nil
+        elseif docs.find_symbol then
+            inferred_sym = docs.find_symbol(inferred_type) or nil
+        end
+        if inferred_inner then
+            inferred_inner_sym = docs.find_symbol and docs.find_symbol(inferred_inner) or nil
+            if not inferred_inner_sym then
+                local inferred_inner_base = sanitize_lookup_type_name(inferred_inner)
+                append_debug_log("[K] inferred_type_inner_base=" .. tostring(inferred_inner_base))
+                if inferred_inner_base then
+                    inferred_inner_sym = docs.find_symbol and docs.find_symbol(inferred_inner_base) or nil
+                end
+            end
+        end
+        append_debug_log("[K] inferred_type_inner=" .. tostring(inferred_inner))
+        append_debug_log("[K] inferred_type_inner_symbol=" .. tostring(inferred_inner_sym and (inferred_inner_sym.fqname or inferred_inner_sym.id) or nil))
+        append_debug_log("[K] inferred_type_lookup_symbol=" .. tostring(inferred_sym and (inferred_sym.fqname or inferred_sym.id) or nil))
+        if inferred_sym then
+            local render_lines = docs.hover_markdown_for_symbol and docs.hover_markdown_for_symbol(inferred_sym) or nil
+            append_debug_log("[K] inferred_type_render_lines=" .. tostring(type(render_lines) == "table" and #render_lines or nil))
+            if render_lines and is_decorated_inferred_type(inferred_type, inferred_base) then
+                local header = {
+                    "```cangjie",
+                    tostring(vim.fn.expand("<cword>")) .. ": " .. inferred_type,
+                    "```",
+                    "",
+                }
+                if inferred_desugared and inferred_desugared ~= inferred_type then
+                    header[#header + 1] = ("desugars to: `%s`"):format(inferred_desugared)
+                end
+                if inferred_inner then
+                    header[#header + 1] = ("value type when Some: `%s`"):format(inferred_inner)
+                    if inferred_inner_sym then
+                        header[#header + 1] = "Press `<CR>` to open inner type docs."
+                    end
+                end
+                if inferred_desugared or inferred_inner then
+                    header[#header + 1] = ""
+                end
+                for _, line in ipairs(render_lines) do
+                    header[#header + 1] = line
+                end
+                append_debug_log("[K] inferred_type_preview_lines=" .. tostring(#header))
+                if docs.open_preview then
+                    docs.open_preview(header, inferred_inner_sym and { action = { sym = inferred_inner_sym } } or nil)
+                else
+                    vim.lsp.util.open_floating_preview(header, "markdown", {
+                        border = "rounded",
+                        max_width = 100,
+                        max_height = 30,
+                    })
+                end
+            else
+                docs.show_symbol(inferred_sym)
+            end
+            return
+        end
+
+        local preview_lines = {
+            "```cangjie",
+            tostring(vim.fn.expand("<cword>")) .. ": " .. inferred_type,
+            "```",
+            "",
+        }
+        if inferred_desugared and inferred_desugared ~= inferred_type then
+            preview_lines[#preview_lines + 1] = ("desugars to: `%s`"):format(inferred_desugared)
+        end
+        if inferred_inner then
+            preview_lines[#preview_lines + 1] = ("value type when Some: `%s`"):format(inferred_inner)
+            if inferred_inner_sym then
+                preview_lines[#preview_lines + 1] = "Press `<CR>` to open inner type docs."
+            end
+        end
+        if inferred_desugared or inferred_inner then
+            preview_lines[#preview_lines + 1] = ""
+        end
+        preview_lines[#preview_lines + 1] = "本地类型推断结果。"
+        if docs.open_preview then
+            docs.open_preview(preview_lines, inferred_inner_sym and { action = { sym = inferred_inner_sym } } or nil)
+        else
+            vim.lsp.util.open_floating_preview(preview_lines, "markdown", {
+                border = "rounded",
+                max_width = 100,
+                max_height = 30,
+            })
+        end
+        return
+    end
+
     if local_sym then
         docs.show_symbol(local_sym)
+        return
+    end
+
+    local source_lines = source_doc_lines_from_locations("textDocument/declaration")
+        or source_doc_lines_from_locations("textDocument/definition")
+        or source_doc_lines_for_cursor()
+    if source_lines then
+        vim.lsp.util.open_floating_preview(source_lines, "markdown", {
+            border = "rounded",
+            max_width = 100,
+            max_height = 30,
+        })
+        return
+    end
+
+    if docs.cursor_in_local_like_position and docs.cursor_in_local_like_position() then
+        append_debug_log("[K] local_like_position_no_hover")
+        append_debug_log("[K] no_result")
         return
     end
 
@@ -867,24 +1420,36 @@ local function manage_cangjie_inlay_hints(action)
 end
 
 local function show_completion_or_notify()
+    append_completion_log(("[manual] ft=%s line=%s"):format(tostring(vim.bo.filetype), tostring(vim.api.nvim_get_current_line())))
     local blink = get_blink()
     if blink and blink.show then
-        blink.show({ providers = { "lsp", "buffer", "path" } })
+        append_completion_log("[manual] blink.show")
+        blink.show({ providers = { "lsp", "cangjie_docs", "buffer", "path" } })
         return
     end
-    vim.notify("blink.cmp 不可用，无法手动触发补全", vim.log.levels.WARN, { title = "Cangjie" })
+    append_completion_log("[manual] blink_unavailable")
+    vim.notify("blink.cmp 不可用，无法触发补全", vim.log.levels.WARN, { title = "Cangjie" })
 end
 
 local function trigger_completion_after_dot()
     if not cangjie_local_auto_features_enabled() then
+        append_completion_log("[dot] skipped local_auto_features=off")
         return
     end
+    append_completion_log(
+        ("[dot] scheduled ft=%s line=%s col=%s"):format(tostring(vim.bo.filetype), tostring(vim.api.nvim_get_current_line()), tostring(vim.api.nvim_win_get_cursor(0)[2]))
+    )
     local blink = get_blink()
     if blink and blink.show then
         vim.schedule(function()
-            blink.show({ providers = { "lsp", "buffer", "path" } })
+            append_completion_log(
+                ("[dot] blink.show ft=%s line=%s col=%s"):format(tostring(vim.bo.filetype), tostring(vim.api.nvim_get_current_line()), tostring(vim.api.nvim_win_get_cursor(0)[2]))
+            )
+            blink.show({ providers = { "lsp", "cangjie_docs", "buffer", "path" } })
         end)
+        return
     end
+    append_completion_log("[dot] blink_unavailable")
 end
 
 local function manage_cangjie_local_auto_features(action)
@@ -916,11 +1481,7 @@ local function manage_cangjie_local_auto_features(action)
         pseudo_inlay_hints().render(0, { cursor_only = false })
     end
 
-    vim.notify(
-        "Cangjie local auto features: " .. (cangjie_local_auto_features_enabled() and "on" or "off"),
-        vim.log.levels.INFO,
-        { title = "Cangjie" }
-    )
+    vim.notify("Cangjie local auto features: " .. (cangjie_local_auto_features_enabled() and "on" or "off"), vim.log.levels.INFO, { title = "Cangjie" })
 end
 
 local function cangjie_document_symbols()
@@ -978,9 +1539,7 @@ local function sanitize_workspace_edit_for_cangjie(edit)
     local has_changes = type(sanitized.changes) == "table" and not vim.tbl_isempty(sanitized.changes)
     if not has_document_changes and not has_changes then
         append_rename_log("rename raw result=" .. vim.inspect(edit))
-        append_rename_log(
-            ("rename shapes: documentChanges=%s changes=%s"):format(type(edit.documentChanges), type(edit.changes))
-        )
+        append_rename_log(("rename shapes: documentChanges=%s changes=%s"):format(type(edit.documentChanges), type(edit.changes)))
         if edit.documentChanges == vim.NIL and edit.changes == nil then
             return false
         end
@@ -991,11 +1550,7 @@ end
 
 local function notify_cangjie_rename_result(edit)
     if edit == false then
-        vim.notify(
-            "cangjie_lsp accepted rename target but returned null edits",
-            vim.log.levels.INFO,
-            { title = "Cangjie" }
-        )
+        vim.notify("cangjie_lsp accepted rename target but returned null edits", vim.log.levels.INFO, { title = "Cangjie" })
         return false
     end
     if not edit then
@@ -1170,8 +1725,7 @@ local function cangjie_call_hierarchy(direction)
 
     local item, reason = prepare_call_hierarchy_item()
     if not item then
-        local message = reason == "request=nil" and "prepareCallHierarchy request returned nil"
-            or "prepareCallHierarchy returned no item at cursor"
+        local message = reason == "request=nil" and "prepareCallHierarchy request returned nil" or "prepareCallHierarchy returned no item at cursor"
         vim.notify(message, vim.log.levels.INFO, { title = "Cangjie" })
         return
     end
@@ -1209,8 +1763,7 @@ local function cangjie_type_hierarchy(direction)
 
     local item, reason = prepare_type_hierarchy_item()
     if not item then
-        local message = reason == "request=nil" and "prepareTypeHierarchy request returned nil"
-            or "prepareTypeHierarchy returned no item at cursor"
+        local message = reason == "request=nil" and "prepareTypeHierarchy request returned nil" or "prepareTypeHierarchy returned no item at cursor"
         vim.notify(message, vim.log.levels.INFO, { title = "Cangjie" })
         return
     end
@@ -1346,7 +1899,7 @@ local function map_cangjie_keys(bufnr)
 end
 
 return {
-    cmd = { server },
+    cmd = { server, "--test", "--enable-log=true", "--log-path=/tmp/" },
     filetypes = { "Cangjie" },
     root_dir = function(bufnr, on_dir)
         on_dir(resolve_root_dir(bufnr))
@@ -1394,6 +1947,7 @@ return {
             if not vim.api.nvim_buf_is_valid(bufnr) then
                 return
             end
+            ensure_cangjie_blink_signature_guard()
             map_cangjie_keys(bufnr)
             ensure_cangjie_document_highlight_autocmds(client, bufnr)
             setup_cangjie_inlay_hints(client, bufnr)
@@ -1404,6 +1958,7 @@ return {
     _codex_debug_docs_resolution = debug_docs_resolution,
     _codex_debug_hover_docs_resolution = debug_hover_docs_resolution,
     _codex_debug_snapshot = debug_snapshot,
+    _codex_debug_completion_probe = debug_completion_probe,
     _codex_lsp_capabilities_info = cangjie_lsp_capabilities_info,
     _codex_lsp_probe = cangjie_lsp_probe,
     _codex_hover_or_local_docs = hover_or_local_docs,

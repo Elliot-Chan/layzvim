@@ -11,7 +11,7 @@ return {
             end
 
             local function format_state()
-                return vim.g.auto_format == false and "fmt:off" or "fmt:on"
+                return vim.g.autoformat == false and "fmt:off" or "fmt:on"
             end
 
             local function formatter_name()

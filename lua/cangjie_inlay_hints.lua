@@ -2,19 +2,30 @@ local M = {}
 
 local ns_types = vim.api.nvim_create_namespace("cangjie_pseudo_inlay_hints_types")
 local ns_params = vim.api.nvim_create_namespace("cangjie_pseudo_inlay_hints_params")
+local docs_module_cache = nil
 local state = {
     timers = {},
     render_keys = {},
     param_keys = {},
     hover_type_cache = {},
+    hover_type_pending = {},
+    hover_param_cache = {},
+    hover_param_pending = {},
+    infer_cache = {},
 }
 local choose_best_call_symbol
 local infer_expression_type
+local infer_type_from_rhs
+local infer_local_variable_type
 local resolve_expression_symbol
 local call_expressions
 local hover_start_for_callee
 local hover_type_for_expression
+local source_member_return_type
 local parse_call_expression
+local split_top_level_csv
+local split_args
+local positional_args_count
 
 local function trim(s)
     if type(s) ~= "string" then
@@ -25,7 +36,47 @@ local function trim(s)
 end
 
 local function docs_index()
-    return assert(dofile(vim.fn.stdpath("config") .. "/lua/cangjie_docs_index.lua"))
+    if not docs_module_cache then
+        docs_module_cache = assert(dofile(vim.fn.stdpath("config") .. "/lua/cangjie_docs_index.lua"))
+    end
+    return docs_module_cache
+end
+
+local function append_inlay_debug_log(message)
+    if type(message) ~= "string" or message == "" then
+        return
+    end
+    local ok, fd = pcall(io.open, "/tmp/cangjie_inlay.log", "a")
+    if not ok or not fd then
+        return
+    end
+    fd:write(os.date("%H:%M:%S ") .. message .. "\n")
+    fd:close()
+end
+
+local function infer_cache_bucket(bufnr)
+    state.infer_cache[bufnr] = state.infer_cache[bufnr] or {}
+    local tick = vim.api.nvim_buf_is_valid(bufnr) and vim.api.nvim_buf_get_changedtick(bufnr) or 0
+    local bucket = state.infer_cache[bufnr]
+    if bucket.changedtick ~= tick then
+        bucket.changedtick = tick
+        bucket.values = {}
+    end
+    bucket.values = bucket.values or {}
+    return bucket.values
+end
+
+local function cached_infer(bufnr, key, compute)
+    if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
+        return compute()
+    end
+    local bucket = infer_cache_bucket(bufnr)
+    if bucket[key] ~= nil then
+        return bucket[key] ~= false and bucket[key] or nil
+    end
+    local value = compute()
+    bucket[key] = value or false
+    return value
 end
 
 local function enabled()
@@ -42,6 +93,10 @@ end
 
 local function parameter_hints_enabled()
     return vim.g.cangjie_pseudo_inlay_hints_parameters ~= false
+end
+
+local function expression_parts_enabled()
+    return vim.g.cangjie_pseudo_inlay_hints_expression_parts == true
 end
 
 local function local_auto_features_enabled()
@@ -125,6 +180,23 @@ local function preferred_win_for_buf(bufnr)
     return wins[1]
 end
 
+local function cangjie_client_ready(bufnr)
+    for _, client in ipairs(vim.lsp.get_clients({ bufnr = bufnr })) do
+        if client.name == "cangjie_lsp" and not client:is_stopped() and client.initialized ~= false then
+            return true
+        end
+    end
+    return false
+end
+
+local function cangjie_client(bufnr)
+    for _, client in ipairs(vim.lsp.get_clients({ bufnr = bufnr })) do
+        if client.name == "cangjie_lsp" and not client:is_stopped() and client.initialized ~= false then
+            return client
+        end
+    end
+end
+
 local function sanitize_type_name(type_name)
     type_name = trim(type_name)
     if not type_name then
@@ -137,32 +209,116 @@ local function sanitize_type_name(type_name)
     return type_name ~= "" and type_name or nil
 end
 
-local function callable_return_type(sym)
+local function display_type_name(type_name)
+    type_name = trim(type_name)
+    if not type_name then
+        return nil
+    end
+    local nullable_prefix = type_name:match("^%?")
+    type_name = type_name:gsub("[`%s]", "")
+    type_name = type_name:gsub("[%?%!%[%]]+$", "")
+    type_name = type_name:match("([%w_%.<>%[%],]+)$") or type_name
+    if nullable_prefix and not type_name:match("^%?") then
+        type_name = "?" .. type_name
+    end
+    return type_name ~= "" and type_name or nil
+end
+
+local function split_generic_type_args(type_name)
+    type_name = trim(type(type_name) == "string" and type_name or nil)
+    if not type_name then
+        return nil, {}
+    end
+    local base, args_text = type_name:match("^([%w_%.]+)%s*<(.+)>$")
+    if not base or not args_text then
+        return sanitize_type_name(type_name), {}
+    end
+    local args = {}
+    for _, part in ipairs(split_top_level_csv(args_text) or {}) do
+        local value = display_type_name(trim(part))
+        if value then
+            table.insert(args, value)
+        end
+    end
+    return sanitize_type_name(base), args
+end
+
+local function substitute_type_params(type_name, receiver_type, sym)
+    type_name = display_type_name(type_name)
+    receiver_type = display_type_name(receiver_type)
+    if not type_name or not receiver_type then
+        return type_name
+    end
+
+    local receiver_base, receiver_args = split_generic_type_args(receiver_type)
+    if not receiver_base or #receiver_args == 0 then
+        return type_name
+    end
+
+    local docs = docs_index()
+    local owner = nil
+    if type(sym) == "table" then
+        local container = sanitize_type_name(sym.container)
+        local module_name = trim(sym.module)
+        if container and module_name then
+            owner = docs.find_symbol(module_name .. "." .. container)
+        end
+        if not owner and container then
+            owner = docs.find_symbol(container)
+        end
+    end
+    if not owner then
+        owner = docs.find_symbol(receiver_base)
+    end
+
+    local type_info = type(owner) == "table" and type(owner.type_info) == "table" and owner.type_info or nil
+    local params = {}
+    for _, raw in ipairs(type_info and type_info.type_params or {}) do
+        local name = trim(type(raw) == "string" and raw:match("([%w_]+)") or nil)
+        if name then
+            table.insert(params, name)
+        end
+    end
+    if #params == 0 then
+        return type_name
+    end
+
+    local substituted = type_name
+    for i, param in ipairs(params) do
+        local actual = receiver_args[i]
+        if actual and actual ~= "" then
+            substituted = substituted:gsub("(%f[%w_])" .. vim.pesc(param) .. "(%f[^%w_])", "%1" .. actual .. "%2")
+        end
+    end
+    return display_type_name(substituted) or type_name
+end
+
+local function callable_return_type(sym, receiver_type)
     if type(sym) ~= "table" then
         return nil
     end
 
-    local direct = sanitize_type_name(sym.return_type)
+    local direct = substitute_type_params(sym.return_type, receiver_type, sym)
     if direct then
         return direct
     end
 
     local callable = type(sym.callable) == "table" and sym.callable or nil
-    local from_callable = sanitize_type_name(callable and callable.return_type or nil)
+    local from_callable = substitute_type_params(callable and callable.return_type or nil, receiver_type, sym)
     if from_callable then
         return from_callable
     end
 
     local signature = trim(sym.signature_short) or trim(sym.signature)
     if signature then
-        local by_arrow = sanitize_type_name(signature:match("%)%s*:%s*([%w_%.<>%[%]%?!]+)"))
+        local by_arrow = substitute_type_params(signature:match("%)%s*:%s*([%w_%.<>%[%]%?!]+)"), receiver_type, sym)
         if by_arrow then
             return by_arrow
         end
     end
 end
 
-local function symbol_value_type(sym)
+local function symbol_value_type(sym, receiver_type)
     if type(sym) ~= "table" then
         return nil
     end
@@ -187,7 +343,7 @@ local function symbol_value_type(sym)
         return fqname
     end
 
-    return callable_return_type(sym)
+    return callable_return_type(sym, receiver_type)
 end
 
 local function literal_rhs_type(rhs)
@@ -208,7 +364,22 @@ local function literal_rhs_type(rhs)
     end
 end
 
+local function strip_rhs_trailing_comment(rhs)
+    rhs = trim(rhs)
+    if not rhs then
+        return nil
+    end
+    local stripped = rhs
+    stripped = stripped:gsub("%s*/%*.*%*/%s*$", "")
+    stripped = stripped:gsub("%s*//.*$", "")
+    return trim(stripped) or rhs
+end
+
 local function constructor_call_type(rhs)
+    if not trim(rhs:match("^([%w_%.<>]+)%s*%b()$")) then
+        return nil, nil
+    end
+
     local call = parse_call_expression(rhs)
     if not call then
         return nil, nil
@@ -220,10 +391,158 @@ local function constructor_call_type(rhs)
     return nil, call
 end
 
-local function infer_type_from_rhs(rhs, bufnr, line_nr, line_text)
-    rhs = trim(rhs)
+local function member_call_parts(expr)
+    expr = trim(expr)
+    if not expr then
+        return nil
+    end
+
+    local receiver_expr, member, args_text = expr:match("^(.*)%.([%w_]+)%s*%((.*)%)$")
+    receiver_expr = trim(receiver_expr)
+    if not member then
+        return nil
+    end
+
+    if not receiver_expr or receiver_expr == "" then
+        return nil
+    end
+
+    local args = split_args(args_text or "")
+    return {
+        receiver_expr = receiver_expr,
+        member = member,
+        args_text = args_text or "",
+        args = args,
+        positional_count = positional_args_count(args),
+        callee = receiver_expr .. "." .. member,
+    }
+end
+
+local function option_some_call_type(rhs, bufnr, line_nr, line_text)
+    local call = parse_call_expression(rhs)
+    if not call then
+        return nil, nil
+    end
+
+    local callee = trim(call.callee)
+    if callee ~= "Some" and callee ~= "Option.Some" then
+        return nil, call
+    end
+
+    local arg = type(call.args) == "table" and call.args[1] or nil
+    local arg_text = trim(type(arg) == "table" and arg.text or nil)
+    if not arg_text then
+        return "Option.Some", call
+    end
+
+    local arg_type = infer_type_from_rhs(arg_text, bufnr, line_nr, line_text)
+    arg_type = display_type_name(arg_type)
+    if arg_type then
+        return ("Option.Some<%s>"):format(arg_type), call
+    end
+
+    return "Option.Some", call
+end
+
+source_member_return_type = function(bufnr, receiver_type, member)
+    if bufnr == nil then
+        return nil
+    end
+
+    local receiver_base = sanitize_type_name(receiver_type)
+    member = trim(member)
+    if not receiver_base or not member or member == "" then
+        return nil
+    end
+
+    local receiver_tail = receiver_base:match("([%w_]+)$") or receiver_base
+    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+    local in_container = false
+    local container_indent = 0
+    local container_kinds = { "class", "struct", "interface", "enum" }
+    local member_kinds = { "func", "prop", "get", "set" }
+    local modifiers = { "public", "private", "protected", "internal", "open", "abstract", "sealed", "static", "redef", "override", "unsafe", "mut" }
+
+    local function strip_leading_modifiers(text)
+        text = trim(text)
+        local changed = true
+        while changed and text do
+            changed = false
+            for _, mod in ipairs(modifiers) do
+                local stripped = text:gsub("^" .. mod .. "%s+", "", 1)
+                if stripped ~= text then
+                    text = trim(stripped)
+                    changed = true
+                    break
+                end
+            end
+        end
+        return text
+    end
+
+    for _, line in ipairs(lines) do
+        local indent = #(line:match("^(%s*)") or "")
+        local stripped_line = trim(line) or ""
+        local is_comment = stripped_line == ""
+            or stripped_line:match("^//")
+            or stripped_line:match("^/%*")
+            or stripped_line:match("^%*")
+            or stripped_line:match("^%*/")
+
+        local code_line = is_comment and nil or strip_leading_modifiers(stripped_line)
+        local declared_name = nil
+        if code_line then
+            for _, kind in ipairs(container_kinds) do
+                declared_name = code_line:match("^" .. kind .. "%s+([%w_]+)")
+                if declared_name then
+                    break
+                end
+            end
+        end
+        if declared_name then
+            in_container = declared_name == receiver_tail
+            container_indent = indent
+        elseif in_container and not is_comment and indent <= container_indent and stripped_line ~= "" then
+            in_container = false
+        end
+
+        if in_container and code_line then
+            local return_type = nil
+            for _, kind in ipairs(member_kinds) do
+                if kind == "prop" then
+                    return_type = code_line:match("^prop%s+" .. vim.pesc(member) .. "%s*:%s*([%w_%.<>%[%]%?!, ]+)")
+                else
+                    return_type = code_line:match("^" .. kind .. "%s+" .. vim.pesc(member) .. "%s*%b()%s*:%s*([%w_%.<>%[%]%?!, ]+)")
+                end
+                if return_type then
+                    break
+                end
+            end
+            return_type = display_type_name(return_type)
+            if return_type then
+                append_inlay_debug_log(
+                    ("[infer_rhs_member_call_source] receiver_type=%s member=%s return_type=%s"):format(
+                        tostring(receiver_type),
+                        tostring(member),
+                        tostring(return_type)
+                    )
+                )
+                return return_type
+            end
+        end
+    end
+end
+
+infer_type_from_rhs = function(rhs, bufnr, line_nr, line_text)
+    rhs = strip_rhs_trailing_comment(rhs)
     if not rhs then
         return nil
+    end
+
+    local unsafe_inner = rhs:match("^unsafe%s*{%s*(.-)%s*}$")
+    if unsafe_inner and unsafe_inner ~= rhs then
+        append_inlay_debug_log(("[infer_rhs] unwrap_unsafe rhs=%s inner=%s"):format(tostring(rhs), tostring(unsafe_inner)))
+        return infer_type_from_rhs(unsafe_inner, bufnr, line_nr, line_text)
     end
 
     local literal_type = literal_rhs_type(rhs)
@@ -231,9 +550,143 @@ local function infer_type_from_rhs(rhs, bufnr, line_nr, line_text)
         return literal_type
     end
 
-    local direct_type = sanitize_type_name(rhs:match("^([A-Z][%w_%.<>%[%]%?!]*)$"))
+    local option_some_type = option_some_call_type(rhs, bufnr, line_nr, line_text)
+    if option_some_type then
+        return option_some_type
+    end
+
+    local direct_type = display_type_name(rhs:match("^([A-Z][%w_%.<>%[%]%?!]*)$"))
     if direct_type then
         return direct_type
+    end
+
+    if bufnr ~= nil and line_nr ~= nil then
+        local direct_var = rhs:match("^([%w_]+)$")
+        if direct_var then
+            local local_type = infer_local_variable_type(bufnr, line_nr, direct_var)
+            append_inlay_debug_log(
+                ("[infer_rhs_var] rhs=%s inferred=%s"):format(
+                    tostring(rhs),
+                    tostring(local_type)
+                )
+            )
+            if local_type then
+                return local_type
+            end
+        end
+    end
+
+    if bufnr ~= nil and line_nr ~= nil then
+        local lhs, op, rest = rhs:match("^(.-)%s*([%+%-])%s*(.+)$")
+        lhs = trim(lhs)
+        rest = trim(rest)
+        if lhs and rest and op then
+            local lhs_type = infer_expression_type(bufnr, line_nr, lhs, {})
+            local lhs_base = sanitize_type_name(lhs_type)
+            local operator_type = nil
+            if lhs_base then
+                local docs = docs_index()
+                for _, candidate in ipairs(docs.find_symbols and (docs.find_symbols(lhs_base .. ".func") or {}) or {}) do
+                    local signature = trim(candidate.signature_short) or trim(candidate.signature) or ""
+                    if trim(candidate.kind) == "operator" and signature:find("operator func " .. op, 1, true) then
+                        operator_type = callable_return_type(candidate, lhs_type)
+                        append_inlay_debug_log(
+                            ("[infer_rhs_op] rhs=%s lhs=%s lhs_type=%s op=%s symbol=%s return_type=%s"):format(
+                                tostring(rhs),
+                                tostring(lhs),
+                                tostring(lhs_type),
+                                tostring(op),
+                                tostring(candidate.fqname or candidate.id),
+                                tostring(operator_type)
+                            )
+                        )
+                        if operator_type then
+                            return operator_type
+                        end
+                    end
+                end
+            end
+            if lhs_base == "CPointer" then
+                append_inlay_debug_log(
+                    ("[infer_rhs_ptr_arith] rhs=%s lhs=%s lhs_type=%s op=%s"):format(
+                        tostring(rhs),
+                        tostring(lhs),
+                        tostring(lhs_type),
+                        tostring(op)
+                    )
+                )
+                return lhs_type
+            end
+        end
+    end
+
+    local receiver, bracket = rhs:match("^([%w_%.]+)%[(.*)%]$")
+    if receiver and bracket and bufnr ~= nil and line_nr ~= nil then
+        local receiver_type = nil
+        if receiver:find("%.", 1, true) or receiver:match("^[A-Z]") then
+            receiver_type = display_type_name(receiver)
+        else
+            receiver_type = infer_local_variable_type(bufnr, line_nr, receiver)
+        end
+
+        local receiver_base = sanitize_type_name(receiver_type)
+        local wants_slice = bracket:find("..", 1, true) ~= nil
+        append_inlay_debug_log(
+            ("[infer_rhs_index] rhs=%s receiver=%s receiver_type=%s base=%s mode=%s"):format(
+                tostring(rhs),
+                tostring(receiver),
+                tostring(receiver_type),
+                tostring(receiver_base),
+                wants_slice and "slice" or "index"
+            )
+        )
+        if receiver_base == "String" then
+            if wants_slice then
+                return "String"
+            end
+            local docs = docs_index()
+            local get_sym = docs.find_member_on_type and docs.find_member_on_type(receiver_base, "get") or nil
+            return callable_return_type(get_sym) or receiver_type
+        end
+    end
+
+    local member_call = member_call_parts(rhs)
+    if bufnr ~= nil and line_nr ~= nil and member_call and resolve_expression_symbol then
+        local receiver_type = infer_expression_type(bufnr, line_nr, member_call.receiver_expr, {})
+        local resolved = nil
+        if receiver_type then
+            local docs = docs_index()
+            local receiver_base = sanitize_type_name(receiver_type)
+            resolved = (docs.resolve_member_on_type and docs.resolve_member_on_type(receiver_type, member_call.member))
+                or (docs.resolve_member_on_type and receiver_base and docs.resolve_member_on_type(receiver_base, member_call.member))
+                or (docs.find_member_on_type and docs.find_member_on_type(receiver_type, member_call.member))
+                or (docs.find_member_on_type and receiver_base and docs.find_member_on_type(receiver_base, member_call.member))
+                or resolve_expression_symbol(
+                    bufnr,
+                    line_nr,
+                    (receiver_base or receiver_type) .. "." .. member_call.member,
+                    member_call.positional_count,
+                    member_call.args,
+                    {}
+                )
+        end
+        local resolved_type = callable_return_type(resolved, receiver_type)
+        if not resolved_type then
+            resolved_type = source_member_return_type(bufnr, receiver_type, member_call.member)
+        end
+        append_inlay_debug_log(
+            ("[infer_rhs_member_call] rhs=%s receiver_expr=%s receiver_type=%s member=%s symbol=%s return_type=%s"):format(
+                tostring(rhs),
+                tostring(member_call.receiver_expr),
+                tostring(receiver_type),
+                tostring(member_call.member),
+                tostring(resolved and (resolved.fqname or resolved.id) or nil),
+                tostring(resolved_type)
+            )
+        )
+        if resolved_type then
+            return resolved_type
+        end
     end
 
     if bufnr ~= nil and line_nr ~= nil then
@@ -246,6 +699,28 @@ local function infer_type_from_rhs(rhs, bufnr, line_nr, line_text)
     local ctor_type, call = constructor_call_type(rhs)
     if ctor_type then
         return ctor_type
+    end
+
+    if bufnr ~= nil and line_nr ~= nil and call and resolve_expression_symbol then
+        local resolved = resolve_expression_symbol(bufnr, line_nr, call.callee, call.positional_count, call.args, {})
+        local receiver_type = nil
+        local receiver_expr = call.callee:match("^(.*)%.([%w_]+)$")
+        if receiver_expr then
+            receiver_type = infer_expression_type(bufnr, line_nr, receiver_expr, {})
+        end
+        local resolved_type = callable_return_type(resolved, receiver_type)
+        append_inlay_debug_log(
+            ("[infer_rhs_call] rhs=%s callee=%s receiver_type=%s symbol=%s return_type=%s"):format(
+                tostring(rhs),
+                tostring(call.callee),
+                tostring(receiver_type),
+                tostring(resolved and (resolved.fqname or resolved.id) or nil),
+                tostring(resolved_type)
+            )
+        )
+        if resolved_type then
+            return resolved_type
+        end
     end
 
     if type_hint_mode() == "hover" then
@@ -285,12 +760,15 @@ local function local_binding_info(line)
         local name, a, b = line:match(pattern)
         if name then
             local _, name_end = line:find(name, 1, true)
+            local eq_idx = line:find("=", 1, true)
+            local rhs_start = eq_idx and line:find("%S", eq_idx + 1) or nil
             if b then
                 return {
                     name = name,
                     name_end_col0 = name_end,
-                    declared_type = sanitize_type_name(a),
+                    declared_type = display_type_name(a),
                     rhs = trim(b),
+                    rhs_start_col0 = rhs_start and (rhs_start - 1) or nil,
                 }
             end
             return {
@@ -298,12 +776,174 @@ local function local_binding_info(line)
                 name_end_col0 = name_end,
                 declared_type = nil,
                 rhs = trim(a),
+                rhs_start_col0 = rhs_start and (rhs_start - 1) or nil,
             }
         end
     end
 end
 
-local function infer_local_variable_type(bufnr, line_nr, varname)
+local function local_assignment_info(line)
+    local name, rhs = line:match("^%s*([%w_]+)%s*=%s*(.+)$")
+    if not name then
+        return nil
+    end
+    if rhs and trim(rhs) == ">" then
+        return nil
+    end
+    local _, name_end = line:find(name, 1, true)
+    local eq_idx = line:find("=", 1, true)
+    local rhs_start = eq_idx and line:find("%S", eq_idx + 1) or nil
+    return {
+        name = name,
+        name_end_col0 = name_end,
+        rhs = trim(rhs),
+        rhs_start_col0 = rhs_start and (rhs_start - 1) or nil,
+    }
+end
+
+local function parameter_type_from_signature_line(line, varname)
+    line = type(line) == "string" and line or ""
+    varname = trim(varname)
+    if not varname or varname == "" then
+        return nil
+    end
+
+    local params_text = line:match("func%s+[%w_%.<>]+%s*%((.*)%)")
+        or line:match("init%s*%((.*)%)")
+    if not params_text then
+        return nil
+    end
+
+    for _, part in ipairs(split_top_level_csv(params_text) or {}) do
+        local piece = trim(part)
+        if piece then
+            local name, ptype = piece:match("^([%w_]+)!?%s*:%s*([%w_%.<>%[%]%?!]+)")
+            if name == varname then
+                return display_type_name(ptype)
+            end
+        end
+    end
+end
+
+local function trailing_lambda_parameter_type(bufnr, line_nr, varname)
+    varname = trim(varname)
+    if not varname or varname == "" then
+        return nil
+    end
+
+    local lambda_line = vim.api.nvim_buf_get_lines(bufnr, line_nr, line_nr + 1, false)[1] or ""
+    if not lambda_line:match("^%s*" .. vim.pesc(varname) .. "%s*=>") then
+        return nil
+    end
+
+    local call_line = nil
+    for lnum = line_nr - 1, math.max(0, line_nr - 3), -1 do
+        local line = vim.api.nvim_buf_get_lines(bufnr, lnum, lnum + 1, false)[1] or ""
+        if trim(line) then
+            call_line = line
+            break
+        end
+    end
+    if not call_line then
+        return nil
+    end
+
+    local prefix = trim((call_line:gsub("%s*{%s*$", "")))
+    local call = parse_call_expression(prefix or "")
+    if not call then
+        return nil
+    end
+
+    local docs = docs_index()
+    local type_sym = docs.find_symbol(call.callee) or docs.find_symbol(sanitize_type_name(call.callee) or call.callee)
+    local type_fqname = type_sym and sanitize_type_name(type_sym.fqname or type_sym.id or nil) or sanitize_type_name(call.callee)
+    local init_candidates = (docs.find_symbols and type_fqname and docs.find_symbols(type_fqname .. ".init")) or {}
+    local explicit_arg_count = positional_args_count(call.args)
+
+    for _, candidate in ipairs(init_candidates or {}) do
+        local callable = type(candidate.callable) == "table" and candidate.callable or nil
+        local params = callable and type(callable.params) == "table" and callable.params or {}
+        if #params == explicit_arg_count + 1 then
+            local lambda_param = params[#params]
+            local lambda_type = trim(type(lambda_param) == "table" and lambda_param.type or nil)
+            local first_arg_type = lambda_type and display_type_name(lambda_type:match("^%(([^)]*)%)%s*%-%>")) or nil
+            if first_arg_type then
+                append_inlay_debug_log(
+                    ("[infer_lambda_param] var=%s call=%s symbol=%s lambda_type=%s inferred=%s"):format(
+                        tostring(varname),
+                        tostring(prefix),
+                        tostring(candidate.fqname or candidate.id),
+                        tostring(lambda_type),
+                        tostring(first_arg_type)
+                    )
+                )
+                return first_arg_type
+            end
+        end
+    end
+end
+
+local function option_inner_type(type_name)
+    type_name = trim(type(type_name) == "string" and type_name or nil)
+    if not type_name then
+        return nil
+    end
+
+    local generic = trim(type_name:match("^[%w_%.]+%s*<(.+)>$"))
+    if generic and (type_name:match("^Option%s*<") or type_name:match("^.*%.Option%s*<")) then
+        return display_type_name(generic)
+    end
+    if type_name:match("^%?") then
+        return display_type_name(type_name:sub(2))
+    end
+end
+
+local function infer_pattern_binding_type(bufnr, line_nr, varname)
+    varname = trim(varname)
+    if not varname or varname == "" then
+        return nil
+    end
+
+    for lnum = line_nr, 0, -1 do
+        local line = vim.api.nvim_buf_get_lines(bufnr, lnum, lnum + 1, false)[1] or ""
+        local case_pat = "^%s*case%s+Some%s*%(%s*" .. vim.pesc(varname) .. "%s*%)%s*=>"
+        local if_let_pat =
+            "^%s*if%s*%(%s*let%s+Some%s*%(%s*" .. vim.pesc(varname) .. "%s*%)%s*<%-%s*(.-)%s*%)%s*{?%s*$"
+
+        local scrutinee_expr = nil
+        if line:match(case_pat) then
+            for back = lnum - 1, 0, -1 do
+                local prev = vim.api.nvim_buf_get_lines(bufnr, back, back + 1, false)[1] or ""
+                scrutinee_expr = trim(prev:match("^%s*match%s*%((.+)%)%s*{?"))
+                if scrutinee_expr then
+                    break
+                end
+            end
+        else
+            scrutinee_expr = trim(line:match(if_let_pat))
+        end
+
+        if scrutinee_expr then
+            local scrutinee_type = infer_type_from_rhs(scrutinee_expr, bufnr, lnum, line)
+                or infer_local_variable_type(bufnr, lnum, scrutinee_expr)
+            local inner = option_inner_type(scrutinee_type)
+            append_inlay_debug_log(
+                ("[infer_pattern] var=%s line=%s scrutinee=%s scrutinee_type=%s inner=%s"):format(
+                    tostring(varname),
+                    tostring(lnum + 1),
+                    tostring(scrutinee_expr),
+                    tostring(scrutinee_type),
+                    tostring(inner)
+                )
+            )
+            if inner then
+                return inner
+            end
+        end
+    end
+end
+
+infer_local_variable_type = function(bufnr, line_nr, varname)
     varname = trim(varname)
     if not varname then
         return nil
@@ -317,10 +957,25 @@ local function infer_local_variable_type(bufnr, line_nr, varname)
             "^%s*const%s+" .. vim.pesc(varname) .. "%s*:%s*([%w_%.<>%[%]%?!]+)",
         }
         for _, pattern in ipairs(typed_patterns) do
-            local declared = sanitize_type_name(line:match(pattern))
+            local declared = display_type_name(line:match(pattern))
             if declared then
                 return declared
             end
+        end
+
+        local param_type = parameter_type_from_signature_line(line, varname)
+        if param_type then
+            return param_type
+        end
+
+        local pattern_type = infer_pattern_binding_type(bufnr, lnum, varname)
+        if pattern_type then
+            return pattern_type
+        end
+
+        local lambda_type = trailing_lambda_parameter_type(bufnr, lnum, varname)
+        if lambda_type then
+            return lambda_type
         end
 
         local assign_patterns = {
@@ -338,7 +993,7 @@ local function infer_local_variable_type(bufnr, line_nr, varname)
     end
 end
 
-local function split_args(text)
+split_args = function(text)
     local args = {}
     local start_idx = 1
     local depth_paren, depth_brack, depth_brace, depth_angle = 0, 0, 0, 0
@@ -396,7 +1051,7 @@ local function split_args(text)
     return args
 end
 
-local function positional_args_count(args)
+positional_args_count = function(args)
     local count = 0
     for _, arg in ipairs(args or {}) do
         local arg_text = trim(arg.text)
@@ -459,6 +1114,9 @@ local function find_matching_paren(line, open_idx)
 end
 
 local function hover_lines_at(bufnr, line_nr, col0)
+    if not cangjie_client_ready(bufnr) then
+        return {}
+    end
     local params = {
         textDocument = vim.lsp.util.make_text_document_params(bufnr),
         position = { line = line_nr, character = col0 },
@@ -477,6 +1135,189 @@ local function hover_lines_at(bufnr, line_nr, col0)
             end
         end
     end
+
+    return {}
+end
+
+local function line_hover_cache(bufnr, line_nr, line_text)
+    state.hover_type_cache[bufnr] = state.hover_type_cache[bufnr] or {}
+    local line_cache = state.hover_type_cache[bufnr][line_nr]
+    if line_cache and line_cache.line_text ~= line_text then
+        state.hover_type_cache[bufnr][line_nr] = nil
+        line_cache = nil
+    end
+    if not line_cache then
+        line_cache = { line_text = line_text, values = {} }
+        state.hover_type_cache[bufnr][line_nr] = line_cache
+    end
+    return line_cache
+end
+
+local function parse_hover_type_lines(lines, expr, call)
+    local hover_container = nil
+    for _, line in ipairs(lines or {}) do
+        local container = sanitize_type_name(line:match("^//%s+In%s+class%s+([%w_%.]+)"))
+            or sanitize_type_name(line:match("^//%s+In%s+struct%s+([%w_%.]+)"))
+            or sanitize_type_name(line:match("^//%s+In%s+interface%s+([%w_%.]+)"))
+            or sanitize_type_name(line:match("^//%s+In%s+enum%s+([%w_%.]+)"))
+        if container then
+            hover_container = container
+        end
+
+        local return_type = display_type_name(line:match("%)%s*:%s*([%w_%.<>%[%]%?!]+)"))
+        if return_type then
+            return return_type
+        end
+
+        if hover_container and line:match("^.-%f[%w_](init)%f[^%w_]") then
+            return hover_container
+        end
+
+        local kind1, kind2 = line:match("^.-%f[%w_](let|var|const|prop)%f[^%w_]%s+[%w_]+%s*:%s*([%w_%.<>%[%]%?!]+)")
+        local value_type = display_type_name(kind2)
+        if kind1 and value_type then
+            return value_type
+        end
+
+        local type_kind, type_name = line:match("^.-%f[%w_](class|struct|interface|enum)%f[^%w_]%s+([%w_%.]+)")
+        if type_kind and type_name then
+            return sanitize_type_name(type_name)
+        end
+    end
+
+    if call then
+        local ctor_type = sanitize_type_name(call.callee)
+        if ctor_type and call.callee:match("^[A-Z]") and #(lines or {}) > 0 then
+            return ctor_type
+        end
+    end
+end
+
+local function rerender_after_async_hover(bufnr)
+    vim.schedule(function()
+        if not vim.api.nvim_buf_is_valid(bufnr) then
+            return
+        end
+        if vim.bo[bufnr].filetype ~= "Cangjie" or vim.api.nvim_get_mode().mode:match("^i") then
+            return
+        end
+        M.render(bufnr, { force = false, cursor_only = false })
+    end)
+end
+
+local function request_hover_type_async(bufnr, line_nr, expr, line_text, hover_col0, call)
+    local client = cangjie_client(bufnr)
+    if not client then
+        return
+    end
+
+    state.hover_type_pending[bufnr] = state.hover_type_pending[bufnr] or {}
+    state.hover_type_pending[bufnr][line_nr] = state.hover_type_pending[bufnr][line_nr] or {}
+    if state.hover_type_pending[bufnr][line_nr][expr] then
+        return
+    end
+    state.hover_type_pending[bufnr][line_nr][expr] = true
+
+    local params = {
+        textDocument = vim.lsp.util.make_text_document_params(bufnr),
+        position = { line = line_nr, character = hover_col0 },
+    }
+
+    client:request("textDocument/hover", params, function(err, result)
+        local pending = state.hover_type_pending[bufnr] and state.hover_type_pending[bufnr][line_nr]
+        if pending then
+            pending[expr] = nil
+        end
+        if not vim.api.nvim_buf_is_valid(bufnr) then
+            return
+        end
+
+        local line_cache = line_hover_cache(bufnr, line_nr, line_text)
+        if err or not result or not result.contents then
+            line_cache.values[expr] = false
+            rerender_after_async_hover(bufnr)
+            return
+        end
+
+        local ok, lines = pcall(vim.lsp.util.convert_input_to_markdown_lines, result.contents)
+        lines = ok and type(lines) == "table" and vim.lsp.util.trim_empty_lines(lines) or {}
+        local resolved = parse_hover_type_lines(lines, expr, call)
+        line_cache.values[expr] = resolved or false
+        rerender_after_async_hover(bufnr)
+    end, bufnr)
+end
+
+local function line_param_cache(bufnr, line_nr, line_text)
+    state.hover_param_cache[bufnr] = state.hover_param_cache[bufnr] or {}
+    local line_cache = state.hover_param_cache[bufnr][line_nr]
+    if line_cache and line_cache.line_text ~= line_text then
+        state.hover_param_cache[bufnr][line_nr] = nil
+        line_cache = nil
+    end
+    if not line_cache then
+        line_cache = { line_text = line_text, values = {} }
+        state.hover_param_cache[bufnr][line_nr] = line_cache
+    end
+    return line_cache
+end
+
+local function parse_hover_parameter_labels(lines)
+    for _, line in ipairs(lines or {}) do
+        local params_text = line:match("func%s+[%w_%.<>]+%s*%((.*)%)")
+        if params_text ~= nil then
+            local labels = {}
+            for _, part in ipairs(split_top_level_csv(params_text)) do
+                local label = trim(part:match("^%s*([%w_]+)%s*:"))
+                if label then
+                    table.insert(labels, label)
+                end
+            end
+            return labels
+        end
+    end
+    return {}
+end
+
+local function request_hover_param_labels_async(bufnr, line_nr, callee_start_col0, line_text, cache_key)
+    local client = cangjie_client(bufnr)
+    if not client then
+        return
+    end
+
+    state.hover_param_pending[bufnr] = state.hover_param_pending[bufnr] or {}
+    state.hover_param_pending[bufnr][line_nr] = state.hover_param_pending[bufnr][line_nr] or {}
+    if state.hover_param_pending[bufnr][line_nr][cache_key] then
+        return
+    end
+    state.hover_param_pending[bufnr][line_nr][cache_key] = true
+
+    local params = {
+        textDocument = vim.lsp.util.make_text_document_params(bufnr),
+        position = { line = line_nr, character = callee_start_col0 },
+    }
+
+    client:request("textDocument/hover", params, function(err, result)
+        local pending = state.hover_param_pending[bufnr] and state.hover_param_pending[bufnr][line_nr]
+        if pending then
+            pending[cache_key] = nil
+        end
+        if not vim.api.nvim_buf_is_valid(bufnr) then
+            return
+        end
+
+        local line_cache = line_param_cache(bufnr, line_nr, line_text)
+        if err or not result or not result.contents then
+            line_cache.values[cache_key] = false
+            rerender_after_async_hover(bufnr)
+            return
+        end
+
+        local ok, lines = pcall(vim.lsp.util.convert_input_to_markdown_lines, result.contents)
+        lines = ok and type(lines) == "table" and vim.lsp.util.trim_empty_lines(lines) or {}
+        local labels = parse_hover_parameter_labels(lines)
+        line_cache.values[cache_key] = (#labels > 0) and labels or false
+        rerender_after_async_hover(bufnr)
+    end, bufnr)
 end
 
 hover_type_for_expression = function(bufnr, line_nr, expr, line_text)
@@ -502,70 +1343,16 @@ hover_type_for_expression = function(bufnr, line_nr, expr, line_text)
         end
     end
 
-    state.hover_type_cache[bufnr] = state.hover_type_cache[bufnr] or {}
-    local line_cache = state.hover_type_cache[bufnr][line_nr]
-    if line_cache and line_cache.line_text ~= line_text then
-        state.hover_type_cache[bufnr][line_nr] = nil
-        line_cache = nil
-    end
-    if not line_cache then
-        line_cache = { line_text = line_text, values = {} }
-        state.hover_type_cache[bufnr][line_nr] = line_cache
-    end
+    local line_cache = line_hover_cache(bufnr, line_nr, line_text)
     if line_cache.values[expr] ~= nil then
         return line_cache.values[expr] ~= false and line_cache.values[expr] or nil
     end
 
-    local lines = hover_lines_at(bufnr, line_nr, hover_col0)
-    local hover_container = nil
-    for _, line in ipairs(lines) do
-        local container = sanitize_type_name(line:match("^//%s+In%s+class%s+([%w_%.]+)"))
-            or sanitize_type_name(line:match("^//%s+In%s+struct%s+([%w_%.]+)"))
-            or sanitize_type_name(line:match("^//%s+In%s+interface%s+([%w_%.]+)"))
-            or sanitize_type_name(line:match("^//%s+In%s+enum%s+([%w_%.]+)"))
-        if container then
-            hover_container = container
-        end
-
-        local return_type = sanitize_type_name(line:match("%)%s*:%s*([%w_%.<>%[%]%?!]+)"))
-        if return_type then
-            line_cache.values[expr] = return_type
-            return return_type
-        end
-
-        if hover_container and line:match("^.-%f[%w_](init)%f[^%w_]") then
-            line_cache.values[expr] = hover_container
-            return hover_container
-        end
-
-        local kind1, kind2 = line:match("^.-%f[%w_](let|var|const|prop)%f[^%w_]%s+[%w_]+%s*:%s*([%w_%.<>%[%]%?!]+)")
-        local value_type = sanitize_type_name(kind2)
-        if kind1 and value_type then
-            line_cache.values[expr] = value_type
-            return value_type
-        end
-
-        local type_kind, type_name = line:match("^.-%f[%w_](class|struct|interface|enum)%f[^%w_]%s+([%w_%.]+)")
-        if type_kind and type_name then
-            local sanitized = sanitize_type_name(type_name)
-            line_cache.values[expr] = sanitized or false
-            return sanitized
-        end
-    end
-
-    if call then
-        local ctor_type = sanitize_type_name(call.callee)
-        if ctor_type and call.callee:match("^[A-Z]") and #lines > 0 then
-            line_cache.values[expr] = ctor_type
-            return ctor_type
-        end
-    end
-
-    line_cache.values[expr] = false
+    request_hover_type_async(bufnr, line_nr, expr, line_text, hover_col0, call)
     return nil
 end
 
-local function split_top_level_csv(text)
+split_top_level_csv = function(text)
     local out = {}
     local start_idx = 1
     local depth_paren, depth_brack, depth_brace, depth_angle = 0, 0, 0, 0
@@ -597,20 +1384,15 @@ local function split_top_level_csv(text)
 end
 
 local function parameter_labels_from_hover(bufnr, line_nr, callee_start_col0)
-    local lines = hover_lines_at(bufnr, line_nr, callee_start_col0)
-    for _, line in ipairs(lines) do
-        local params_text = line:match("func%s+[%w_%.<>]+%s*%((.*)%)")
-        if params_text ~= nil then
-            local labels = {}
-            for _, part in ipairs(split_top_level_csv(params_text)) do
-                local label = trim(part:match("^%s*([%w_]+)%s*:"))
-                if label then
-                    table.insert(labels, label)
-                end
-            end
-            return labels
-        end
+    local line_text = vim.api.nvim_buf_get_lines(bufnr, line_nr, line_nr + 1, false)[1] or ""
+    local cache_key = tostring(callee_start_col0)
+    local line_cache = line_param_cache(bufnr, line_nr, line_text)
+    local cached = line_cache.values[cache_key]
+    if cached ~= nil then
+        return cached ~= false and cached or {}
     end
+
+    request_hover_param_labels_async(bufnr, line_nr, callee_start_col0, line_text, cache_key)
     return {}
 end
 
@@ -802,7 +1584,7 @@ local function split_type_tail(type_name)
     return type_name:match("([%w_]+)$") or type_name
 end
 
-local function infer_expression_type(bufnr, line_nr, expr, cache)
+infer_expression_type = function(bufnr, line_nr, expr, cache)
     expr = trim(expr)
     if not expr then
         return nil
@@ -817,6 +1599,37 @@ local function infer_expression_type(bufnr, line_nr, expr, cache)
     if direct_type then
         cache[expr] = direct_type
         return direct_type
+    end
+
+    if bufnr ~= nil and line_nr ~= nil then
+        local direct_var = trim(expr:match("^([%w_]+)$"))
+        if direct_var then
+            local local_type = infer_local_variable_type(bufnr, line_nr, direct_var)
+            if local_type then
+                cache[expr] = local_type
+                append_inlay_debug_log(
+                    ("[infer_expr_var] expr=%s inferred=%s"):format(
+                        tostring(expr),
+                        tostring(local_type)
+                    )
+                )
+                return local_type
+            end
+        end
+    end
+
+    local ctor_display, ctor_call = constructor_call_type(expr)
+    if ctor_call and ctor_display then
+        local display_ctor = display_type_name(ctor_call.callee) or ctor_display
+        cache[expr] = display_ctor
+        append_inlay_debug_log(
+            ("[infer_expr] ctor expr=%s callee=%s inferred=%s"):format(
+                tostring(expr),
+                tostring(ctor_call.callee),
+                tostring(display_ctor)
+            )
+        )
+        return display_ctor
     end
 
     local sym = nil
@@ -960,6 +1773,10 @@ resolve_expression_symbol = function(bufnr, line_nr, expr, arg_count, args, cach
         current_type = sanitize_type_name(first_sym.fqname or first_sym.id or first)
     else
         current_type = infer_local_variable_type(bufnr, line_nr, first)
+        if not current_type then
+            local line_text = vim.api.nvim_buf_get_lines(bufnr, line_nr, line_nr + 1, false)[1] or ""
+            current_type = hover_type_for_expression(bufnr, line_nr, first, line_text)
+        end
     end
 
     if not current_type then
@@ -980,7 +1797,7 @@ resolve_expression_symbol = function(bufnr, line_nr, expr, arg_count, args, cach
         end
 
         if i < #parts then
-            current_type = symbol_value_type(resolved)
+            current_type = symbol_value_type(resolved, current_type)
             if not current_type then
                 return nil
             end
@@ -998,6 +1815,66 @@ local function add_type_hint(bufnr, line_nr, col0, type_name)
     })
 end
 
+local function render_expression_part_hints(bufnr, line_nr, rhs, rhs_start_col0)
+    if not expression_parts_enabled() or type(rhs) ~= "string" or rhs == "" or rhs_start_col0 == nil then
+        return
+    end
+
+    local i = 1
+    while i <= #rhs do
+        local ch = rhs:sub(i, i)
+        if ch == '"' or ch == "'" then
+            local quote = ch
+            local j = i + 1
+            local escaped = false
+            while j <= #rhs do
+                local cur = rhs:sub(j, j)
+                if escaped then
+                    escaped = false
+                elseif cur == "\\" then
+                    escaped = true
+                elseif cur == quote then
+                    break
+                end
+                j = j + 1
+            end
+            if j <= #rhs and rhs:sub(j, j) == quote then
+                add_type_hint(bufnr, line_nr, rhs_start_col0 + j, quote == '"' and "String" or "Rune")
+                i = j + 1
+            else
+                break
+            end
+        else
+            i = i + 1
+        end
+    end
+end
+
+local function render_call_result_hints(bufnr, line_nr, text, start_col0)
+    if not expression_parts_enabled() or type(text) ~= "string" or text == "" or start_col0 == nil then
+        return
+    end
+
+    local calls = call_expressions(text)
+    for _, call in ipairs(calls) do
+        local args = split_args(call.args_text)
+        local sym = resolve_expression_symbol(bufnr, line_nr, call.callee, positional_args_count(args), args, {})
+        local receiver_type = nil
+        local receiver = call.callee:match("^(.*)%.([%w_]+)$")
+        if receiver then
+            receiver_type = infer_expression_type(bufnr, line_nr, receiver, {})
+        end
+        local return_type = callable_return_type(sym, receiver_type)
+        if not return_type then
+            local expr_text = text:sub(call.callee_start, call.close_idx)
+            return_type = hover_type_for_expression(bufnr, line_nr, expr_text, text)
+        end
+        if return_type then
+            add_type_hint(bufnr, line_nr, start_col0 + call.close_idx, return_type)
+        end
+    end
+end
+
 local function add_arg_hint(bufnr, line_nr, col0, label)
     vim.api.nvim_buf_set_extmark(bufnr, ns_params, line_nr, col0, {
         virt_text = { { label .. ": ", hint_hl() } },
@@ -1010,9 +1887,53 @@ local function render_line(bufnr, line_nr, line, opts)
     opts = opts or {}
     local info = local_binding_info(line)
     if opts.type_hints ~= false and type_hints_enabled() and info and not info.declared_type and info.rhs then
-        local inferred = infer_type_from_rhs(info.rhs, bufnr, line_nr, line)
+        local inferred = cached_infer(
+            bufnr,
+            ("local:%d:%s:%s"):format(line_nr, tostring(info.name), tostring(info.rhs)),
+            function()
+                return infer_type_from_rhs(info.rhs, bufnr, line_nr, line)
+            end
+        )
+        append_inlay_debug_log(
+            ("[render_local] line=%s name=%s rhs=%s inferred=%s"):format(
+                tostring(line_nr + 1),
+                tostring(info.name),
+                tostring(info.rhs),
+                tostring(inferred)
+            )
+        )
         if inferred and info.name_end_col0 then
             add_type_hint(bufnr, line_nr, info.name_end_col0, inferred)
+        end
+        render_expression_part_hints(bufnr, line_nr, info.rhs, info.rhs_start_col0)
+        render_call_result_hints(bufnr, line_nr, info.rhs, info.rhs_start_col0 or 0)
+    elseif opts.type_hints ~= false and type_hints_enabled() then
+        local assignment = local_assignment_info(line)
+        if assignment and assignment.name_end_col0 then
+            local inferred = cached_infer(
+                bufnr,
+                ("assign:%d:%s:%s"):format(line_nr, tostring(assignment.name), tostring(assignment.rhs)),
+                function()
+                    return infer_local_variable_type(bufnr, math.max(line_nr - 1, 0), assignment.name)
+                        or infer_type_from_rhs(assignment.rhs, bufnr, line_nr, line)
+                end
+            )
+            append_inlay_debug_log(
+                ("[render_assign] line=%s name=%s rhs=%s inferred=%s"):format(
+                    tostring(line_nr + 1),
+                    tostring(assignment.name),
+                    tostring(assignment.rhs),
+                    tostring(inferred)
+                )
+            )
+            if inferred then
+                add_type_hint(bufnr, line_nr, assignment.name_end_col0, inferred)
+            end
+            render_expression_part_hints(bufnr, line_nr, assignment.rhs, assignment.rhs_start_col0)
+            render_call_result_hints(bufnr, line_nr, assignment.rhs, assignment.rhs_start_col0 or 0)
+        elseif expression_parts_enabled() then
+            render_expression_part_hints(bufnr, line_nr, line, 0)
+            render_call_result_hints(bufnr, line_nr, line, 0)
         end
     end
 
@@ -1056,10 +1977,10 @@ local function render_line(bufnr, line_nr, line, opts)
     end
 end
 
-local function clear_type_marks(bufnr)
+local function clear_type_marks(bufnr, start_line, end_line)
     bufnr = bufnr or vim.api.nvim_get_current_buf()
     if vim.api.nvim_buf_is_valid(bufnr) then
-        vim.api.nvim_buf_clear_namespace(bufnr, ns_types, 0, -1)
+        vim.api.nvim_buf_clear_namespace(bufnr, ns_types, start_line or 0, end_line or -1)
     end
 end
 
@@ -1077,6 +1998,17 @@ function M.clear(bufnr)
     state.render_keys[bufnr] = nil
     state.param_keys[bufnr] = nil
     state.hover_type_cache[bufnr] = nil
+    state.hover_type_pending[bufnr] = nil
+    state.hover_param_cache[bufnr] = nil
+    state.hover_param_pending[bufnr] = nil
+    state.infer_cache[bufnr] = nil
+end
+
+function M.hide(bufnr)
+    bufnr = bufnr or vim.api.nvim_get_current_buf()
+    clear_type_marks(bufnr)
+    clear_param_marks(bufnr)
+    vim.b[bufnr].cangjie_pseudo_inlay_hints_enabled = false
 end
 
 function M.render(bufnr, opts)
@@ -1090,7 +2022,7 @@ function M.render(bufnr, opts)
         return false
     end
 
-    if hide_in_insert() and vim.api.nvim_get_mode().mode:match("^i") then
+    if vim.api.nvim_get_mode().mode:match("^i") then
         return false
     end
 
@@ -1117,6 +2049,7 @@ function M.render(bufnr, opts)
         state.render_keys[bufnr] = nil
         state.param_keys[bufnr] = nil
         state.hover_type_cache[bufnr] = nil
+        state.infer_cache[bufnr] = nil
     end
 
     if opts.cursor_only then
@@ -1124,11 +2057,12 @@ function M.render(bufnr, opts)
             vim.b[bufnr].cangjie_pseudo_inlay_hints_enabled = true
             return true
         end
+        clear_type_marks(bufnr, cursor_line, cursor_line + 1)
         clear_param_marks(bufnr, cursor_line, cursor_line + 1)
         render_line(bufnr, cursor_line, current_line, {
             parameter_hints = true,
             cursor_col1 = cursor_col1,
-            type_hints = false,
+            type_hints = true,
         })
         state.param_keys[bufnr] = param_key
         vim.b[bufnr].cangjie_pseudo_inlay_hints_enabled = true
@@ -1166,6 +2100,7 @@ function M.status(bufnr)
         hide_in_insert = hide_in_insert(),
         type_hints = type_hints_enabled(),
         parameter_hints = parameter_hints_enabled(),
+        expression_parts = expression_parts_enabled(),
         type_mode = type_hint_mode(),
     }
 end
@@ -1219,6 +2154,7 @@ function M.manage(action)
                 ("hide_in_insert=%s"):format(tostring(status.hide_in_insert)),
                 ("type_hints=%s"):format(tostring(status.type_hints)),
                 ("parameter_hints=%s"):format(tostring(status.parameter_hints)),
+                ("expression_parts=%s"):format(tostring(status.expression_parts)),
                 ("type_mode=%s"):format(tostring(status.type_mode)),
             }, "\n"),
             vim.log.levels.INFO,
@@ -1250,7 +2186,7 @@ function M.setup(bufnr)
             return
         end
 
-        if hide_in_insert() and vim.api.nvim_get_mode().mode:match("^i") then
+        if vim.api.nvim_get_mode().mode:match("^i") then
             return
         end
 
@@ -1297,25 +2233,12 @@ function M.setup(bufnr)
             schedule_render(cursor_delay_ms(), { cursor_only = true })
         end,
     })
-    vim.api.nvim_create_autocmd("TextChangedI", {
-        group = group,
-        buffer = bufnr,
-        callback = function()
-            if not local_auto_features_enabled() then
-                return
-            end
-            if hide_in_insert() then
-                return
-            end
-            schedule_render(update_delay_ms(), { cursor_only = false })
-        end,
-    })
     vim.api.nvim_create_autocmd("InsertEnter", {
         group = group,
         buffer = bufnr,
         callback = function()
             if hide_in_insert() then
-                M.clear(bufnr)
+                M.hide(bufnr)
             end
         end,
     })
@@ -1335,9 +2258,6 @@ function M.setup(bufnr)
     })
 
     vim.b[bufnr].cangjie_pseudo_inlay_hints_ready = true
-    if local_auto_features_enabled() then
-        schedule_render(update_delay_ms(), { cursor_only = false })
-    end
 end
 
 function M._debug_resolve_call(bufnr, line_nr, expr, args_text)
@@ -1414,6 +2334,42 @@ function M._debug_parameter_calls(line, cursor_col1)
         }
     end
     return out
+end
+
+function M._debug_call_result_hints(bufnr, line_nr, text, start_col0)
+    local out = {}
+    for _, call in ipairs(call_expressions(text or "")) do
+        local args = split_args(call.args_text)
+        local sym = resolve_expression_symbol(bufnr or 0, line_nr or 0, call.callee, positional_args_count(args), args, {})
+        local receiver_type = nil
+        local receiver = call.callee:match("^(.*)%.([%w_]+)$")
+        if receiver then
+            receiver_type = infer_expression_type(bufnr, line_nr, receiver, {})
+        end
+        local return_type = callable_return_type(sym, receiver_type)
+        if not return_type then
+            local expr_text = (text or ""):sub(call.callee_start, call.close_idx)
+            return_type = hover_type_for_expression(bufnr or 0, line_nr or 0, expr_text, text or "")
+        end
+        out[#out + 1] = {
+            callee = call.callee,
+            expr = (text or ""):sub(call.callee_start, call.close_idx),
+            close_idx = call.close_idx,
+            start_col0 = start_col0 or 0,
+            symbol = sym and (sym.signature_short or sym.fqname or sym.id) or nil,
+            return_type = return_type,
+        }
+    end
+    return out
+end
+
+function M._debug_status_and_marks(bufnr)
+    bufnr = bufnr or vim.api.nvim_get_current_buf()
+    local marks = vim.api.nvim_buf_get_extmarks(bufnr, ns_types, 0, -1, { details = true })
+    return {
+        status = M.status(bufnr),
+        type_marks = marks,
+    }
 end
 
 return M

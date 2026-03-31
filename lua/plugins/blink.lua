@@ -77,6 +77,7 @@ return {
             opts.sources.per_filetype.Cangjie = {
                 inherit_defaults = true,
                 "lsp",
+                "cangjie_docs",
                 "buffer",
                 "path",
                 "snippets",
@@ -90,6 +91,18 @@ return {
                     return 0
                 end
                 return 0
+            end
+            lsp.async = function(ctx)
+                if vim.bo[ctx.bufnr].filetype == "Cangjie" then
+                    return true
+                end
+                return false
+            end
+            lsp.timeout_ms = function(ctx)
+                if vim.bo[ctx.bufnr].filetype == "Cangjie" then
+                    return 120
+                end
+                return 2000
             end
             lsp.fallbacks = function(ctx, enabled_sources)
                 if vim.bo[ctx.bufnr].filetype == "Cangjie" then
@@ -138,6 +151,15 @@ return {
             })
             opts.sources.providers.lsp = lsp
 
+            opts.sources.providers.cangjie_docs = {
+                name = "Cangjie Docs",
+                module = "cangjie_blink_source",
+                enabled = function()
+                    return vim.bo.filetype == "Cangjie"
+                end,
+                score_offset = -1,
+            }
+
             local buffer = opts.sources.providers.buffer or {}
             buffer.min_keyword_length = function(ctx)
                 if vim.bo[ctx.bufnr].filetype == "Cangjie" then
@@ -149,7 +171,7 @@ return {
 
             opts.completion = opts.completion or {}
             opts.completion.trigger = opts.completion.trigger or {}
-            opts.completion.trigger.show_on_keyword = true
+            opts.completion.trigger.show_on_keyword = false
             opts.completion.trigger.show_on_trigger_character = true
             opts.completion.documentation = opts.completion.documentation or {}
             opts.completion.documentation.auto_show = true
