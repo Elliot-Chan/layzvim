@@ -31,19 +31,10 @@ return {
                 return "lsp:" .. tostring(#vim.lsp.get_clients({ bufnr = 0 }))
             end
 
-            local function codex_state()
-                local ok, codex = pcall(require, "codex")
-                if not ok then
-                    return ""
-                end
-                return "codex:" .. codex.statusline()
-            end
-
             table.insert(opts.sections.lualine_x, 1, diagnostics_state)
             table.insert(opts.sections.lualine_x, 2, format_state)
             table.insert(opts.sections.lualine_x, 3, formatter_name)
             table.insert(opts.sections.lualine_x, 4, lsp_count)
-            table.insert(opts.sections.lualine_x, 5, codex_state)
         end,
     },
 }

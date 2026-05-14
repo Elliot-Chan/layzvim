@@ -18,6 +18,7 @@ local get_callable
 local extract_type_from_hover_lines
 local infer_local_variable_type
 local infer_receiver_type_from_lsp
+local infer_type_from_rhs
 local split_top_level_csv
 
 local function debug_enabled()
@@ -1059,6 +1060,107 @@ local function extract_hover_signature_hint(lines, member_name)
     return nil
 end
 
+local function extract_balanced_segment(line, start_col, open_ch, close_ch)
+    line = as_string(line)
+    start_col = tonumber(start_col)
+    if not line or not start_col or start_col < 1 or line:sub(start_col, start_col) ~= open_ch then
+        return nil, nil
+    end
+
+    local depth = 0
+    local in_string = nil
+    local escape = false
+    for i = start_col, #line do
+        local ch = line:sub(i, i)
+        if in_string then
+            if escape then
+                escape = false
+            elseif ch == "\\" then
+                escape = true
+            elseif ch == in_string then
+                in_string = nil
+            end
+        else
+            if ch == '"' or ch == "'" then
+                in_string = ch
+            elseif ch == open_ch then
+                depth = depth + 1
+            elseif ch == close_ch then
+                depth = depth - 1
+                if depth == 0 then
+                    return line:sub(start_col + 1, i - 1), i
+                end
+            end
+        end
+    end
+
+    return nil, nil
+end
+
+local function infer_expression_type(expr)
+    expr = trim(expr)
+    if not expr then
+        return nil
+    end
+
+    local named_arg_value = trim(expr:match("^[%w_]+%s*:%s*(.+)$"))
+    if named_arg_value then
+        expr = named_arg_value
+    end
+
+    if expr:match("^[%w_]+$") then
+        return infer_local_variable_type(expr) or infer_type_from_rhs(expr)
+    end
+
+    if expr:match("^[A-Z][%w_%.<>]*$") then
+        return sanitize_type_name(expr)
+    end
+
+    if expr:match("^[%w_%.]+$") then
+        local inferred = infer_local_variable_type(expr) or infer_type_from_rhs(expr)
+        if inferred then
+            return inferred
+        end
+
+        local receiver, member = expr:match("^(.-)%.([%w_]+)$")
+        if receiver and member then
+            local receiver_type = nil
+            if looks_like_api_symbol(receiver) then
+                receiver_type = sanitize_type_name(receiver)
+            else
+                receiver_type = infer_local_variable_type(receiver)
+            end
+            if receiver_type then
+                local member_sym = find_member_on_type(receiver_type, member)
+                if member_sym then
+                    local callable = get_callable(member_sym)
+                    return sanitize_type_name(as_string(member_sym.value_type))
+                        or sanitize_type_name(as_string(callable.return_type))
+                        or sanitize_type_name(as_string(member_sym.return_type))
+                end
+            end
+        end
+    end
+
+    return infer_type_from_rhs(expr)
+end
+
+local function infer_argument_hints(args)
+    local hints = {}
+    for _, raw_arg in ipairs(args or {}) do
+        local raw = trim(raw_arg)
+        if raw then
+            local named = trim(raw:match("^([%w_]+)%s*:"))
+            table.insert(hints, {
+                raw = raw,
+                name = named,
+                type = infer_expression_type(raw),
+            })
+        end
+    end
+    return hints
+end
+
 local function extract_source_call_hint(parsed, member_name)
     parsed = as_table(parsed) or {}
     local line = as_string(parsed.line_text)
@@ -1088,14 +1190,52 @@ local function extract_source_call_hint(parsed, member_name)
         i = i + 1
     end
 
+    local generic_call = false
     local next_char = line:sub(i, i)
     if next_char == "<" then
-        return { generic_call = true }
+        generic_call = true
+        local _, generic_end = extract_balanced_segment(line, i, "<", ">")
+        if not generic_end then
+            return { generic_call = true }
+        end
+        i = generic_end + 1
+        while i <= #line and line:sub(i, i):match("%s") do
+            i = i + 1
+        end
+        next_char = line:sub(i, i)
     end
     if next_char == "(" then
-        return { generic_call = false }
+        local args_text = extract_balanced_segment(line, i, "(", ")")
+        if not args_text then
+            return { generic_call = generic_call }
+        end
+        local raw_args = split_top_level_csv(args_text)
+        local arg_hints = infer_argument_hints(raw_args)
+        return {
+            generic_call = generic_call,
+            arg_count = #arg_hints,
+            arg_hints = arg_hints,
+        }
     end
     return nil
+end
+
+local function callable_arity_range(callable)
+    callable = as_table(callable) or {}
+    local min_arity = 0
+    local max_arity = 0
+    local variadic = callable.is_variadic == true or callable.variadic == true
+
+    for _, p in ipairs(as_list(callable.params)) do
+        p = as_table(p) or {}
+        max_arity = max_arity + 1
+        if not p.is_optional and not p.has_default then
+            min_arity = min_arity + 1
+        end
+        variadic = variadic or p.is_variadic == true or p.variadic == true
+    end
+
+    return min_arity, variadic and math.huge or max_arity
 end
 
 local function score_overload_candidate(sym, signature_hint, source_hint)
@@ -1114,18 +1254,22 @@ local function score_overload_candidate(sym, signature_hint, source_hint)
     local score = 0
     local callable = get_callable(sym)
     local candidate_param_types = {}
+    local candidate_param_names = {}
     for _, p in ipairs(as_list(callable.params)) do
         p = as_table(p) or {}
         local ptype = sanitize_type_name(as_string(p.type))
         if ptype then
             table.insert(candidate_param_types, ptype)
         end
+        table.insert(candidate_param_names, trim(as_string(p.name)))
     end
     local hint_param_types = extract_param_types_from_signature(signature_hint)
     local candidate_return_type = sanitize_type_name(as_string(callable.return_type))
         or extract_return_type_from_signature(sym.signature_short)
         or extract_return_type_from_signature(sym.signature)
     local hint_return_type = extract_return_type_from_signature(signature_hint)
+    local source_arg_count = source_hint and tonumber(source_hint.arg_count) or nil
+    local source_arg_hints = source_hint and as_list(source_hint.arg_hints) or {}
     for _, candidate in ipairs(candidates) do
         if candidate then
             if signature_hint and candidate == signature_hint then
@@ -1156,6 +1300,33 @@ local function score_overload_candidate(sym, signature_hint, source_hint)
         end
     end
 
+    if #source_arg_hints > 0 then
+        for i = 1, math.min(#source_arg_hints, #candidate_param_types) do
+            local arg_hint = as_table(source_arg_hints[i]) or {}
+            local arg_type = sanitize_type_name(as_string(arg_hint.type))
+            local param_type = candidate_param_types[i]
+            local param_name = candidate_param_names[i]
+
+            if arg_type and param_type then
+                if arg_type == param_type then
+                    score = score + 120
+                elseif arg_type:match("([%w_]+)$") == param_type:match("([%w_]+)$") then
+                    score = score + 85
+                elseif param_type == "Any" or param_type == "Object" then
+                    score = score + 12
+                elseif param_type:match("^[A-Z][%w_]*$") then
+                    score = score + 18
+                else
+                    score = score - 45
+                end
+            end
+
+            if arg_hint.name and param_name and arg_hint.name == param_name then
+                score = score + 20
+            end
+        end
+    end
+
     if #hint_param_types > 0 or #candidate_param_types > 0 then
         if #hint_param_types == #candidate_param_types then
             score = score + 30
@@ -1167,6 +1338,18 @@ local function score_overload_candidate(sym, signature_hint, source_hint)
             if hint_param_types[i] == candidate_param_types[i] then
                 score = score + 25
             end
+        end
+    end
+
+    if source_arg_count ~= nil then
+        local min_arity, max_arity = callable_arity_range(callable)
+        if source_arg_count >= min_arity and source_arg_count <= max_arity then
+            score = score + (#source_arg_hints > 0 and 25 or 90)
+            if source_arg_count == #candidate_param_types then
+                score = score + (#source_arg_hints > 0 and 10 or 40)
+            end
+        else
+            score = score - 120
         end
     end
 
@@ -3239,7 +3422,7 @@ looks_like_api_symbol = function(name)
     return name:find("%.", 1, true) ~= nil or name:match("^[A-Z]") ~= nil
 end
 
-local function infer_type_from_rhs(rhs)
+infer_type_from_rhs = function(rhs)
     rhs = as_string(rhs)
     if not rhs or rhs == "" then
         return nil

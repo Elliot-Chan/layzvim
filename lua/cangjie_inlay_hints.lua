@@ -375,6 +375,83 @@ local function strip_rhs_trailing_comment(rhs)
     return trim(stripped) or rhs
 end
 
+local function brace_delta(text)
+    text = type(text) == "string" and text or ""
+    local delta = 0
+    local in_string = nil
+    local escape = false
+    for i = 1, #text do
+        local ch = text:sub(i, i)
+        if in_string then
+            if escape then
+                escape = false
+            elseif ch == "\\" then
+                escape = true
+            elseif ch == in_string then
+                in_string = nil
+            end
+        else
+            if ch == '"' or ch == "'" then
+                in_string = ch
+            elseif ch == "{" then
+                delta = delta + 1
+            elseif ch == "}" then
+                delta = delta - 1
+            end
+        end
+    end
+    return delta
+end
+
+local function synchronized_block_result_type(rhs, bufnr, line_nr)
+    rhs = trim(rhs)
+    if not rhs or not rhs:match("^synchronized%s*%b()%s*{%s*$") then
+        return nil
+    end
+    if bufnr == nil or line_nr == nil or not vim.api.nvim_buf_is_valid(bufnr) then
+        return nil
+    end
+
+    local line_count = vim.api.nvim_buf_line_count(bufnr)
+    local depth = brace_delta(rhs)
+    local last_expr = nil
+    local last_expr_line = nil
+
+    for lnum = line_nr + 1, line_count - 1 do
+        local raw_line = vim.api.nvim_buf_get_lines(bufnr, lnum, lnum + 1, false)[1] or ""
+        local stripped_line = strip_rhs_trailing_comment(raw_line)
+        local effective = trim(stripped_line)
+
+        if effective and effective ~= "" and not effective:match("^}") then
+            local candidate = trim(effective:gsub("[,;]+$", ""))
+            if candidate and candidate ~= "" then
+                last_expr = candidate
+                last_expr_line = lnum
+            end
+        end
+
+        depth = depth + brace_delta(raw_line)
+        if depth <= 0 then
+            break
+        end
+    end
+
+    if not last_expr then
+        append_inlay_debug_log(("[infer_rhs_sync] rhs=%s no_last_expr"):format(tostring(rhs)))
+        return nil
+    end
+
+    local inferred = infer_type_from_rhs(last_expr, bufnr, last_expr_line, last_expr)
+    append_inlay_debug_log(
+        ("[infer_rhs_sync] rhs=%s last_expr=%s inferred=%s"):format(
+            tostring(rhs),
+            tostring(last_expr),
+            tostring(inferred)
+        )
+    )
+    return inferred
+end
+
 local function constructor_call_type(rhs)
     if not trim(rhs:match("^([%w_%.<>]+)%s*%b()$")) then
         return nil, nil
@@ -537,6 +614,11 @@ infer_type_from_rhs = function(rhs, bufnr, line_nr, line_text)
     rhs = strip_rhs_trailing_comment(rhs)
     if not rhs then
         return nil
+    end
+
+    local sync_type = synchronized_block_result_type(rhs, bufnr, line_nr)
+    if sync_type then
+        return sync_type
     end
 
     local unsafe_inner = rhs:match("^unsafe%s*{%s*(.-)%s*}$")

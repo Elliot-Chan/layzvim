@@ -3,6 +3,19 @@ return {
         "saghen/blink.cmp",
         optional = true,
         opts = function(_, opts)
+            local function cangjie_docs_active(bufnr)
+                bufnr = bufnr or vim.api.nvim_get_current_buf()
+                return vim.g.cangjie_completion_docs == true or vim.b[bufnr].cangjie_completion_docs_manual == true
+            end
+
+            local function is_cangjie_ctx(ctx)
+                local bufnr = ctx and ctx.bufnr
+                if type(bufnr) ~= "number" or bufnr == 0 then
+                    bufnr = vim.api.nvim_get_current_buf()
+                end
+                return vim.api.nvim_buf_is_valid(bufnr) and vim.bo[bufnr].filetype == "Cangjie"
+            end
+
             if not vim.g.cangjie_blink_docs_guard then
                 vim.g.cangjie_blink_docs_guard = true
                 vim.schedule(function()
@@ -11,8 +24,15 @@ return {
                     local ok_menu, menu = pcall(require, "blink.cmp.completion.windows.menu")
                     if ok_docs and ok_sources and ok_menu and docs and sources and menu and type(docs.show_item) == "function" then
                         docs.show_item = function(context, item)
+                            local bufnr = context and context.bufnr or vim.api.nvim_get_current_buf()
+                            if vim.api.nvim_buf_is_valid(bufnr) and vim.bo[bufnr].filetype == "Cangjie" and not cangjie_docs_active(bufnr) then
+                                return docs.close()
+                            end
                             docs.auto_show_timer:stop()
                             if item == nil or not menu.win:is_open() then
+                                if vim.api.nvim_buf_is_valid(bufnr) then
+                                    vim.b[bufnr].cangjie_completion_docs_manual = false
+                                end
                                 return docs.close()
                             end
 
@@ -74,39 +94,45 @@ return {
             opts.sources.per_filetype = opts.sources.per_filetype or {}
             opts.sources.providers = opts.sources.providers or {}
 
-            opts.sources.per_filetype.Cangjie = {
+            local cangjie_sources = {
                 inherit_defaults = true,
                 "lsp",
-                "cangjie_docs",
                 "buffer",
                 "path",
                 "snippets",
             }
+            if vim.g.cangjie_completion_docs == true then
+                table.insert(cangjie_sources, 2, "cangjie_docs")
+            end
+            opts.sources.per_filetype.Cangjie = cangjie_sources
 
             local lsp = opts.sources.providers.lsp or {}
             local original_lsp_fallbacks = lsp.fallbacks
             local original_lsp_override = lsp.override or {}
             lsp.min_keyword_length = function(ctx)
-                if vim.bo[ctx.bufnr].filetype == "Cangjie" then
+                if ctx.trigger and ctx.trigger.initial_kind == "manual" then
                     return 0
+                end
+                if is_cangjie_ctx(ctx) then
+                    return 2
                 end
                 return 0
             end
             lsp.async = function(ctx)
-                if vim.bo[ctx.bufnr].filetype == "Cangjie" then
+                if is_cangjie_ctx(ctx) then
                     return true
                 end
                 return false
             end
             lsp.timeout_ms = function(ctx)
-                if vim.bo[ctx.bufnr].filetype == "Cangjie" then
-                    return 120
+                if is_cangjie_ctx(ctx) then
+                    return 80
                 end
                 return 2000
             end
             lsp.fallbacks = function(ctx, enabled_sources)
-                if vim.bo[ctx.bufnr].filetype == "Cangjie" then
-                    return { "buffer", "path" }
+                if is_cangjie_ctx(ctx) then
+                    return {}
                 end
                 if type(original_lsp_fallbacks) == "function" then
                     return original_lsp_fallbacks(ctx, enabled_sources)
@@ -117,7 +143,8 @@ return {
                 resolve = function(self, item, callback)
                     return self:resolve(item, function(resolved_item)
                         resolved_item = resolved_item or item
-                        if vim.bo.filetype == "Cangjie" then
+                        local bufnr = vim.api.nvim_get_current_buf()
+                        if vim.bo.filetype == "Cangjie" and cangjie_docs_active(bufnr) then
                             local docs = assert(dofile(vim.fn.stdpath("config") .. "/lua/cangjie_docs_index.lua"))
                             local matched_sym = docs.find_symbol_for_completion_item(resolved_item)
                             if matched_sym then
@@ -162,17 +189,60 @@ return {
 
             local buffer = opts.sources.providers.buffer or {}
             buffer.min_keyword_length = function(ctx)
-                if vim.bo[ctx.bufnr].filetype == "Cangjie" then
-                    return 2
+                if ctx.trigger and ctx.trigger.initial_kind == "manual" then
+                    return 0
+                end
+                if is_cangjie_ctx(ctx) then
+                    return 4
                 end
                 return 0
             end
             opts.sources.providers.buffer = buffer
 
+            local path = opts.sources.providers.path or {}
+            path.min_keyword_length = function(ctx)
+                if ctx.trigger and ctx.trigger.initial_kind == "manual" then
+                    return 0
+                end
+                if is_cangjie_ctx(ctx) then
+                    return 99
+                end
+                return 0
+            end
+            opts.sources.providers.path = path
+
+            local snippets = opts.sources.providers.snippets or {}
+            snippets.min_keyword_length = function(ctx)
+                if ctx.trigger and ctx.trigger.initial_kind == "manual" then
+                    return 0
+                end
+                if is_cangjie_ctx(ctx) then
+                    return 99
+                end
+                return 0
+            end
+            opts.sources.providers.snippets = snippets
+
             opts.completion = opts.completion or {}
             opts.completion.trigger = opts.completion.trigger or {}
-            opts.completion.trigger.show_on_keyword = false
+            opts.completion.trigger.show_on_keyword = true
             opts.completion.trigger.show_on_trigger_character = true
+            opts.completion.trigger.show_on_blocked_trigger_characters = function(ctx)
+                local blocked = { " ", "\n", "\t" }
+                if is_cangjie_ctx(ctx) then
+                    blocked[#blocked + 1] = "."
+                    blocked[#blocked + 1] = "("
+                    blocked[#blocked + 1] = ":"
+                end
+                return blocked
+            end
+            opts.completion.menu = opts.completion.menu or {}
+            opts.completion.menu.auto_show_delay_ms = function(ctx, _)
+                if is_cangjie_ctx(ctx) then
+                    return 120
+                end
+                return 0
+            end
             opts.completion.documentation = opts.completion.documentation or {}
             opts.completion.documentation.auto_show = true
             opts.completion.documentation.auto_show_delay_ms = 200

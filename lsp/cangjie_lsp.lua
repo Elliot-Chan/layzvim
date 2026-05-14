@@ -3,6 +3,13 @@ local util = require("lspconfig.util")
 
 local sdk = vim.env.CANGJIE_SDK_PATH or os.getenv("CANGJIE_SDK_PATH") or ""
 local server = (sdk ~= "" and vim.fs.joinpath(sdk, "tools", "bin", "LSPServer")) or "LSPServer"
+local restart_state = {
+    pending = false,
+    attempts = {},
+}
+local restart_delay_ms = 1200
+local restart_burst_window_ms = 60000
+local restart_burst_limit = 5
 
 local function make_capabilities()
     local capabilities = vim.lsp.protocol.make_client_capabilities()
@@ -126,12 +133,66 @@ local function append_hierarchy_log(message)
 end
 
 local function append_completion_log(message)
+    if vim.g.cangjie_completion_debug ~= true then
+        return
+    end
     local ok, fd = pcall(io.open, "/tmp/cangjie_completion.log", "a")
     if not ok or not fd then
         return
     end
     fd:write(os.date("%H:%M:%S "), message, "\n")
     fd:close()
+end
+
+local function prune_restart_attempts(now)
+    local kept = {}
+    for _, ts in ipairs(restart_state.attempts) do
+        if now - ts <= restart_burst_window_ms then
+            kept[#kept + 1] = ts
+        end
+    end
+    restart_state.attempts = kept
+end
+
+local function has_live_cangjie_buffers()
+    for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+        if vim.api.nvim_buf_is_loaded(bufnr) and vim.bo[bufnr].filetype == "Cangjie" and vim.api.nvim_buf_get_name(bufnr) ~= "" then
+            return true
+        end
+    end
+    return false
+end
+
+local function schedule_cangjie_lsp_restart(reason)
+    if restart_state.pending then
+        return
+    end
+
+    local now = vim.uv.now()
+    prune_restart_attempts(now)
+    if #restart_state.attempts >= restart_burst_limit then
+        vim.notify(
+            "Cangjie LSP exited too frequently; auto restart paused. Check /tmp LSP logs before restarting manually.",
+            vim.log.levels.ERROR,
+            { title = "Cangjie LSP" }
+        )
+        return
+    end
+
+    restart_state.pending = true
+    restart_state.attempts[#restart_state.attempts + 1] = now
+
+    vim.defer_fn(function()
+        restart_state.pending = false
+        if not vim.lsp.is_enabled("cangjie_lsp") then
+            return
+        end
+        if not has_live_cangjie_buffers() then
+            return
+        end
+        vim.lsp.enable("cangjie_lsp")
+        vim.notify("Cangjie LSP restarted" .. (reason and (": " .. reason) or ""), vim.log.levels.WARN, { title = "Cangjie LSP" })
+    end, restart_delay_ms)
 end
 
 local function get_blink()
@@ -216,8 +277,24 @@ local function cangjie_inlay_hide_in_insert()
     return vim.g.cangjie_inlay_hints_hide_in_insert ~= false
 end
 
+local function cangjie_prefer_native_inlay_hints()
+    return vim.g.cangjie_native_inlay_hints == true
+end
+
 local function cangjie_local_auto_features_enabled()
     return vim.g.cangjie_local_auto_features ~= false
+end
+
+local function cangjie_completion_docs_enabled()
+    return vim.g.cangjie_completion_docs == true
+end
+
+local function cangjie_manual_completion_docs_enabled()
+    return vim.g.cangjie_manual_completion_docs ~= false
+end
+
+local function cangjie_dot_completion_enabled()
+    return vim.g.cangjie_dot_completion == true
 end
 
 local function any_cangjie_client_supports_inlay(bufnr)
@@ -227,6 +304,10 @@ local function any_cangjie_client_supports_inlay(bufnr)
         end
     end
     return false
+end
+
+local function use_native_cangjie_inlay(bufnr)
+    return cangjie_prefer_native_inlay_hints() and any_cangjie_client_supports_inlay(bufnr)
 end
 
 local function set_cangjie_inlay_hints(bufnr, enabled)
@@ -307,15 +388,18 @@ local function ensure_cangjie_inlay_autocmds(bufnr)
 end
 
 local function setup_cangjie_inlay_hints(client, bufnr)
-    if not client_supports_inlay_hints(client, bufnr) then
-        pseudo_inlay_hints().setup(bufnr)
+    pseudo_inlay_hints().setup(bufnr)
+
+    if use_native_cangjie_inlay(bufnr) then
+        ensure_cangjie_inlay_autocmds(bufnr)
+        if cangjie_inlay_enabled() and not vim.api.nvim_get_mode().mode:match("^i") then
+            set_cangjie_inlay_hints(bufnr, true)
+        end
         return
     end
 
-    ensure_cangjie_inlay_autocmds(bufnr)
-
     if cangjie_inlay_enabled() and not vim.api.nvim_get_mode().mode:match("^i") then
-        set_cangjie_inlay_hints(bufnr, true)
+        pseudo_inlay_hints().render(bufnr, { force = true })
     end
 end
 
@@ -1121,6 +1205,45 @@ local function docs_from_current_hover()
     return nil, nil
 end
 
+local function cursor_in_call_site()
+    local line = vim.api.nvim_get_current_line()
+    local col1 = (vim.api.nvim_win_get_cursor(0)[2] or 0) + 1
+    local left = line:sub(1, col1)
+    local ident = left:match("([%w_]+)%s*$")
+    if not ident or ident == "" then
+        return false
+    end
+
+    local start_col = col1 - #ident + 1
+    local idx = start_col + #ident
+    while idx <= #line and line:sub(idx, idx):match("%s") do
+        idx = idx + 1
+    end
+
+    local next_char = line:sub(idx, idx)
+    if next_char == "<" then
+        local depth = 0
+        for i = idx, #line do
+            local ch = line:sub(i, i)
+            if ch == "<" then
+                depth = depth + 1
+            elseif ch == ">" then
+                depth = depth - 1
+                if depth == 0 then
+                    idx = i + 1
+                    while idx <= #line and line:sub(idx, idx):match("%s") do
+                        idx = idx + 1
+                    end
+                    next_char = line:sub(idx, idx)
+                    break
+                end
+            end
+        end
+    end
+
+    return next_char == "("
+end
+
 local function hover_or_local_docs()
     local docs = get_docs_index()
     append_debug_log("[K] start")
@@ -1128,6 +1251,26 @@ local function hover_or_local_docs()
     append_debug_log("[K] lsp_locations=" .. tostring(local_sym and (local_sym.fqname or local_sym.id) or nil))
     if local_sym then
         docs.show_symbol(local_sym)
+        return
+    end
+
+    local hover_sym, hover_lines = docs_from_current_hover()
+    append_debug_log("[K] hover_early=" .. tostring(hover_sym and (hover_sym.fqname or hover_sym.id) or nil))
+    append_debug_log("[K] cursor_in_call_site=" .. tostring(cursor_in_call_site()))
+    local prefer_hover_lines = hover_lines
+        and #hover_lines > 0
+        and ((docs.cursor_has_member_access and docs.cursor_has_member_access()) or cursor_in_call_site() or docs.should_try_lsp_hover())
+    append_debug_log("[K] prefer_hover_lines=" .. tostring(prefer_hover_lines))
+    if prefer_hover_lines then
+        vim.lsp.util.open_floating_preview(hover_lines, "markdown", {
+            border = "rounded",
+            max_width = 100,
+            max_height = 30,
+        })
+        return
+    end
+    if hover_sym then
+        docs.show_symbol(hover_sym)
         return
     end
 
@@ -1262,13 +1405,6 @@ local function hover_or_local_docs()
         return
     end
 
-    local hover_sym, hover_lines = docs_from_current_hover()
-    append_debug_log("[K] hover_pre=" .. tostring(hover_sym and (hover_sym.fqname or hover_sym.id) or nil))
-    if hover_sym then
-        docs.show_symbol(hover_sym)
-        return
-    end
-
     local has_member_access = docs.cursor_has_member_access and docs.cursor_has_member_access() or false
     local should_try_hover = has_member_access or docs.should_try_lsp_hover()
     append_debug_log("[K] member_access=" .. tostring(has_member_access) .. " should_try_hover=" .. tostring(should_try_hover))
@@ -1357,9 +1493,16 @@ end
 local function cangjie_inlay_hints_status(bufnr)
     local ih = inlay_hints_api()
     local supported = any_cangjie_client_supports_inlay(bufnr)
-    local enabled = ih and ih.is_enabled and ih.is_enabled({ bufnr = bufnr }) or false
+    local using_native = use_native_cangjie_inlay(bufnr)
+    local pseudo_status = pseudo_inlay_hints().status(bufnr)
+    local enabled = using_native
+            and ih
+            and ih.is_enabled
+            and ih.is_enabled({ bufnr = bufnr })
+        or pseudo_status.enabled
     return {
         supported = supported,
+        using_native = using_native,
         enabled = enabled,
         hide_in_insert = cangjie_inlay_hide_in_insert(),
         local_auto_features = cangjie_local_auto_features_enabled(),
@@ -1369,7 +1512,7 @@ end
 local function manage_cangjie_inlay_hints(action)
     local bufnr = vim.api.nvim_get_current_buf()
     local status = cangjie_inlay_hints_status(bufnr)
-    if not status.supported then
+    if not status.using_native then
         pseudo_inlay_hints().manage(action)
         return
     end
@@ -1409,6 +1552,7 @@ local function manage_cangjie_inlay_hints(action)
         vim.notify(
             table.concat({
                 ("supported=%s"):format(tostring(status.supported)),
+                ("using_native=%s"):format(tostring(status.using_native)),
                 ("enabled=%s"):format(tostring(status.enabled)),
                 ("hide_in_insert=%s"):format(tostring(status.hide_in_insert)),
                 ("local_auto_features=%s"):format(tostring(status.local_auto_features)),
@@ -1419,12 +1563,45 @@ local function manage_cangjie_inlay_hints(action)
     end
 end
 
+local function manage_cangjie_completion_docs(action)
+    action = trim_text(action) or "toggle"
+
+    if action == "toggle" then
+        vim.g.cangjie_manual_completion_docs = not cangjie_manual_completion_docs_enabled()
+    elseif action == "on" then
+        vim.g.cangjie_manual_completion_docs = true
+    elseif action == "off" then
+        vim.g.cangjie_manual_completion_docs = false
+    elseif action == "status" then
+        -- handled below
+    else
+        vim.notify("Usage: CangjieCompletionDocs [toggle|on|off|status]", vim.log.levels.WARN, { title = "Cangjie" })
+        return
+    end
+
+    vim.b.cangjie_completion_docs_manual = false
+
+    vim.notify(
+        table.concat({
+            ("manual_docs=%s"):format(tostring(cangjie_manual_completion_docs_enabled())),
+            ("auto_docs=%s"):format(tostring(cangjie_completion_docs_enabled())),
+        }, action == "status" and "\n" or ""),
+        vim.log.levels.INFO,
+        { title = "Cangjie Completion Docs" }
+    )
+end
+
 local function show_completion_or_notify()
     append_completion_log(("[manual] ft=%s line=%s"):format(tostring(vim.bo.filetype), tostring(vim.api.nvim_get_current_line())))
     local blink = get_blink()
     if blink and blink.show then
+        vim.b.cangjie_completion_docs_manual = cangjie_manual_completion_docs_enabled()
         append_completion_log("[manual] blink.show")
-        blink.show({ providers = { "lsp", "cangjie_docs", "buffer", "path" } })
+        blink.show({
+            providers = (cangjie_completion_docs_enabled() or cangjie_manual_completion_docs_enabled())
+                    and { "lsp", "cangjie_docs", "buffer", "path" }
+                or { "lsp", "buffer", "path" },
+        })
         return
     end
     append_completion_log("[manual] blink_unavailable")
@@ -1432,8 +1609,8 @@ local function show_completion_or_notify()
 end
 
 local function trigger_completion_after_dot()
-    if not cangjie_local_auto_features_enabled() then
-        append_completion_log("[dot] skipped local_auto_features=off")
+    if not cangjie_local_auto_features_enabled() or not cangjie_dot_completion_enabled() then
+        append_completion_log("[dot] skipped auto_features_or_dot_completion=off")
         return
     end
     append_completion_log(
@@ -1445,7 +1622,7 @@ local function trigger_completion_after_dot()
             append_completion_log(
                 ("[dot] blink.show ft=%s line=%s col=%s"):format(tostring(vim.bo.filetype), tostring(vim.api.nvim_get_current_line()), tostring(vim.api.nvim_win_get_cursor(0)[2]))
             )
-            blink.show({ providers = { "lsp", "cangjie_docs", "buffer", "path" } })
+            blink.show({ providers = cangjie_completion_docs_enabled() and { "lsp", "cangjie_docs", "buffer", "path" } or { "lsp", "buffer", "path" } })
         end)
         return
     end
@@ -1867,12 +2044,12 @@ local function map_cangjie_keys(bufnr)
     map("n", "K", live("_codex_hover_or_local_docs"), "Cangjie Docs")
     map("n", "gK", live("_codex_signature_help_or_notify"), "Cangjie Signature Help")
     map("n", "gr", live("_codex_references"), "Cangjie References")
-    map("n", "<leader>cr", live("_codex_rename"), "Cangjie Rename")
-    map("n", "<leader>cR", live("_codex_references"), "Cangjie References")
-    map("n", "<leader>cu", live("_codex_incoming_calls"), "Cangjie Incoming Calls")
-    map("n", "<leader>cU", live("_codex_outgoing_calls"), "Cangjie Outgoing Calls")
-    map("n", "<leader>ct", live("_codex_supertypes"), "Cangjie Supertypes")
-    map("n", "<leader>cT", live("_codex_subtypes"), "Cangjie Subtypes")
+    map("n", "<localleader>jr", live("_codex_rename"), "Cangjie Rename")
+    map("n", "<localleader>jR", live("_codex_references"), "Cangjie References")
+    map("n", "<localleader>ju", live("_codex_incoming_calls"), "Cangjie Incoming Calls")
+    map("n", "<localleader>jU", live("_codex_outgoing_calls"), "Cangjie Outgoing Calls")
+    map("n", "<localleader>jt", live("_codex_supertypes"), "Cangjie Supertypes")
+    map("n", "<localleader>jT", live("_codex_subtypes"), "Cangjie Subtypes")
     map("n", "gD", function()
         notify_unsupported_lsp_feature("Declaration")
     end, "Declaration Unsupported")
@@ -1882,20 +2059,18 @@ local function map_cangjie_keys(bufnr)
     map("n", "gy", function()
         notify_unsupported_lsp_feature("Type Definition")
     end, "Type Definition Unsupported")
-    map("n", "<leader>co", live("_codex_open_docs_in_browser"), "Open Cangjie docs in browser")
-    map("n", "<leader>cj", live("_codex_document_symbols"), "Cangjie Document Symbols")
-    map("n", "<leader>cW", live("_codex_workspace_symbols"), "Cangjie Workspace Symbols")
-    map("n", "<leader>cc", live("_codex_run_codelens"), "Run Cangjie CodeLens (Optional)")
-    map("n", "<leader>cK", live("_codex_refresh_codelens"), "Refresh Cangjie CodeLens (Optional)")
-    map({ "i", "n" }, "<C-Space>", live("_codex_show_completion_or_notify"), "Trigger Cangjie Completion")
-    map({ "n", "i" }, "<C-f>", live("_codex_scroll_docs_page_down"), "Scroll Cangjie Docs Page Down")
-    map({ "n", "i" }, "<C-b>", live("_codex_scroll_docs_page_up"), "Scroll Cangjie Docs Page Up")
-    map({ "n", "i" }, "<C-d>", live("_codex_scroll_docs_half_down"), "Scroll Cangjie Docs Half Down")
-    map({ "n", "i" }, "<C-u>", live("_codex_scroll_docs_half_up"), "Scroll Cangjie Docs Half Up")
-    map("i", ".", function()
-        live("_codex_trigger_completion_after_dot")()
-        return "."
-    end, "Insert . and trigger completion", { expr = true })
+    map("n", "<localleader>jo", live("_codex_open_docs_in_browser"), "Open Cangjie docs in browser")
+    map("n", "<localleader>jq", live("_codex_document_symbols"), "Cangjie Document Symbols")
+    map("n", "<localleader>jQ", live("_codex_workspace_symbols"), "Cangjie Workspace Symbols")
+    map("n", "<localleader>jk", live("_codex_run_codelens"), "Run Cangjie CodeLens (Optional)")
+    map("n", "<localleader>jK", live("_codex_refresh_codelens"), "Refresh Cangjie CodeLens (Optional)")
+    map({ "i", "n" }, "<C-x><C-o>", live("_codex_show_completion_or_notify"), "Trigger Cangjie Completion")
+    if cangjie_dot_completion_enabled() then
+        map("i", ".", function()
+            live("_codex_trigger_completion_after_dot")()
+            return "."
+        end, "Insert . and trigger completion", { expr = true })
+    end
 end
 
 return {
@@ -1954,6 +2129,16 @@ return {
         end)
         vim.notify("Cangjie LSP start success", vim.log.levels.INFO)
     end,
+    on_exit = function(code, signal, client_id)
+        local client = vim.lsp.get_client_by_id(client_id)
+        local reason = ("code=%s signal=%s"):format(tostring(code), tostring(signal))
+        if client and client._cangjie_intentional_stop then
+            return
+        end
+        vim.schedule(function()
+            schedule_cangjie_lsp_restart(reason)
+        end)
+    end,
 
     _codex_debug_docs_resolution = debug_docs_resolution,
     _codex_debug_hover_docs_resolution = debug_hover_docs_resolution,
@@ -1965,6 +2150,7 @@ return {
     _codex_signature_help_or_notify = signature_help_or_notify,
     _codex_open_docs_in_browser = open_docs_in_browser,
     _codex_manage_inlay_hints = manage_cangjie_inlay_hints,
+    _codex_manage_completion_docs = manage_cangjie_completion_docs,
     _codex_manage_local_auto_features = manage_cangjie_local_auto_features,
     _codex_document_symbols = cangjie_document_symbols,
     _codex_references = cangjie_references,

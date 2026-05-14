@@ -1,6 +1,13 @@
 local source = {}
 
+local function completion_debug_enabled()
+    return vim.g.cangjie_completion_debug == true
+end
+
 local function append_completion_log(message)
+    if not completion_debug_enabled() then
+        return
+    end
     local ok, fd = pcall(io.open, "/tmp/cangjie_completion.log", "a")
     if not ok or not fd then
         return

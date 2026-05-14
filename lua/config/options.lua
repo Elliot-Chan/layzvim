@@ -7,14 +7,19 @@ vim.opt.titlestring = "%F - nvim"
 vim.g.autoformat = true
 
 -- Cangjie defaults:
--- - Prefer native LSP inlay hints when available; otherwise fall back to local pseudo hints.
+-- - Use local pseudo inlay hints by default because the Cangjie server's native inlay capability is unreliable.
 -- - Keep pseudo type hints enabled, but default them to hover-first mode to avoid heavy local guessing.
 -- - Keep pseudo parameter hints off by default because they are the noisiest and most cursor-sensitive.
 -- - Hide hints in insert mode and debounce refreshes to reduce editing latency.
--- - Keep local auto features enabled, but allow one-shot shutdown via :CangjieLocalAuto.
+-- - Keep post-insert local refreshes enabled, but disable insert-mode dot completion and completion-doc augmentation by default.
 vim.g.cangjie_inlay_hints = true
 vim.g.cangjie_inlay_hints_hide_in_insert = true
+vim.g.cangjie_native_inlay_hints = false
 vim.g.cangjie_local_auto_features = true
+vim.g.cangjie_completion_debug = false
+vim.g.cangjie_completion_docs = false
+vim.g.cangjie_manual_completion_docs = true
+vim.g.cangjie_dot_completion = false
 vim.g.cangjie_pseudo_inlay_hints = true
 vim.g.cangjie_pseudo_inlay_hints_hide_in_insert = true
 vim.g.cangjie_pseudo_inlay_hints_types = true

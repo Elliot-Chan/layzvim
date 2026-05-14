@@ -437,3 +437,18 @@ end, {
         return { "toggle", "on", "off", "status" }
     end,
 })
+
+api.nvim_create_user_command("CangjieCompletionDocs", function(opts)
+    local cfg = load_cangjie_lsp_config()
+    local action = trim_arg(opts.args)
+    if action == "" then
+        action = "toggle"
+    end
+    cfg._codex_manage_completion_docs(action)
+end, {
+    desc = "Manage Cangjie completion documentation",
+    nargs = "?",
+    complete = function()
+        return { "toggle", "on", "off", "status" }
+    end,
+})
