@@ -2,13 +2,29 @@ return {
     {
         "folke/snacks.nvim",
         opts = function(_, opts)
+            local cangjie_ignore = (_G.CangjiePerf and _G.CangjiePerf.ignore) or {}
+            local function extend_exclude(source)
+                source.exclude = source.exclude or {}
+                for _, pattern in ipairs(cangjie_ignore) do
+                    if not vim.tbl_contains(source.exclude, pattern) then
+                        table.insert(source.exclude, pattern)
+                    end
+                end
+            end
+
             opts.picker = opts.picker or {}
             opts.picker.sources = opts.picker.sources or {}
+            opts.picker.sources.files = opts.picker.sources.files or {}
+            opts.picker.sources.grep = opts.picker.sources.grep or {}
             opts.picker.sources.explorer = opts.picker.sources.explorer or {}
             opts.picker.sources.explorer.actions = opts.picker.sources.explorer.actions or {}
             opts.picker.sources.explorer.win = opts.picker.sources.explorer.win or {}
             opts.picker.sources.explorer.win.list = opts.picker.sources.explorer.win.list or {}
             opts.picker.sources.explorer.win.list.keys = opts.picker.sources.explorer.win.list.keys or {}
+
+            extend_exclude(opts.picker.sources.files)
+            extend_exclude(opts.picker.sources.grep)
+            extend_exclude(opts.picker.sources.explorer)
 
             opts.picker.sources.explorer.actions.explorer_down = function(picker, item, action)
                 if not item then

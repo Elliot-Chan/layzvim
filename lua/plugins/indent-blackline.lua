@@ -72,8 +72,18 @@ return {
       end)
 
       vim.g.rainbow_delimiters = { highlight = highlight }
-      -- require("ibl").setup(opts)
-      require("ibl").setup({ scope = { highlight = highlight } })
+      opts.scope = vim.tbl_deep_extend("force", opts.scope or {}, { highlight = highlight })
+      opts.show_trailing_blankline_indent = nil
+      opts.scope.show_extra_scope = nil
+      require("ibl").setup(opts)
+      vim.api.nvim_create_autocmd("FileType", {
+        pattern = "Cangjie",
+        callback = function(args)
+          if _G.CangjiePerf and _G.CangjiePerf.enabled(args.buf) then
+            require("ibl").setup_buffer(args.buf, { scope = { enabled = false } })
+          end
+        end,
+      })
       hooks.register(hooks.type.SCOPE_HIGHLIGHT, hooks.builtin.scope_highlight_from_extmark)
     end,
     main = "ibl",

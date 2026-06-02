@@ -6,6 +6,9 @@ local state = {
     by_key = {},
     by_source = {},
     by_diagnostic = {},
+    by_container = {},
+    by_container_member = {},
+    by_container_member_names = {},
     symbols = {},
     metadata = {},
 }
@@ -47,6 +50,99 @@ local function get_preview_state()
     return vim.g.cangjie_docs_preview_buf, vim.g.cangjie_docs_preview_win, vim.g.cangjie_docs_preview_action
 end
 
+local function docs_preview_opts(extra)
+    return vim.tbl_extend("force", {
+        border = "rounded",
+        max_width = 100,
+        max_height = 30,
+        focusable = true,
+        focus = false,
+        close_events = { "CursorMoved", "CursorMovedI", "InsertEnter", "BufLeave" },
+        focus_id = "cangjie_docs_preview",
+    }, type(extra) == "table" and extra or {})
+end
+
+local function close_docs_preview()
+    pcall(vim.api.nvim_del_augroup_by_name, "cangjie_docs_preview_close")
+    local bufnr, winid = get_preview_state()
+    if winid and vim.api.nvim_win_is_valid(winid) then
+        pcall(vim.api.nvim_win_close, winid, true)
+    end
+    if bufnr and vim.api.nvim_buf_is_valid(bufnr) then
+        pcall(vim.api.nvim_buf_delete, bufnr, { force = true })
+    end
+    set_preview_state(nil, nil, nil)
+end
+
+local function docs_preview_size(lines, opts)
+    local max_width = opts.max_width or 100
+    local max_height = opts.max_height or 30
+    local width = 1
+    for _, line in ipairs(lines) do
+        width = math.max(width, vim.fn.strdisplaywidth(line))
+    end
+    width = math.max(24, math.min(max_width, width + 2))
+    local height = math.max(1, math.min(max_height, #lines))
+    return width, height
+end
+
+local function open_docs_preview(lines, opts)
+    lines = type(lines) == "table" and lines or {}
+    opts = docs_preview_opts(opts)
+    close_docs_preview()
+
+    local bufnr = vim.api.nvim_create_buf(false, true)
+    vim.bo[bufnr].bufhidden = "wipe"
+    vim.bo[bufnr].filetype = "markdown"
+    vim.bo[bufnr].modifiable = true
+    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
+    vim.bo[bufnr].modifiable = false
+
+    local width, height = docs_preview_size(lines, opts)
+    local winid = vim.api.nvim_open_win(bufnr, false, {
+        relative = "cursor",
+        row = 1,
+        col = 0,
+        width = width,
+        height = height,
+        style = "minimal",
+        border = opts.border,
+        focusable = opts.focusable ~= false,
+    })
+    vim.wo[winid].wrap = true
+    vim.wo[winid].linebreak = true
+    vim.wo[winid].conceallevel = 2
+    vim.wo[winid].foldenable = false
+    vim.keymap.set("n", "q", close_docs_preview, {
+        buffer = bufnr,
+        silent = true,
+        nowait = true,
+        desc = "Close Cangjie Docs",
+    })
+    if #opts.close_events > 0 then
+        local source_win = vim.api.nvim_get_current_win()
+        local source_buf = vim.api.nvim_get_current_buf()
+        local source_cursor = vim.api.nvim_win_get_cursor(source_win)
+        vim.api.nvim_create_autocmd(opts.close_events, {
+            group = vim.api.nvim_create_augroup("cangjie_docs_preview_close", { clear = true }),
+            callback = function(ev)
+                if ev.event == "CursorMoved" or ev.event == "CursorMovedI" then
+                    if not vim.api.nvim_win_is_valid(source_win) or vim.api.nvim_get_current_buf() ~= source_buf then
+                        return
+                    end
+                    local cursor = vim.api.nvim_win_get_cursor(source_win)
+                    if cursor[1] == source_cursor[1] and cursor[2] == source_cursor[2] then
+                        return
+                    end
+                end
+                close_docs_preview()
+            end,
+            desc = "Close Cangjie docs preview",
+        })
+    end
+    return bufnr, winid
+end
+
 local function read_file(path)
     local fd = io.open(path, "r")
     if not fd then
@@ -65,6 +161,19 @@ local function write_file(path, text)
     fd:write(text)
     fd:close()
     return true
+end
+
+local function reset_state()
+    state.loaded = false
+    state.index = nil
+    state.by_key = {}
+    state.by_source = {}
+    state.by_diagnostic = {}
+    state.by_container = {}
+    state.by_container_member = {}
+    state.by_container_member_names = {}
+    state.symbols = {}
+    state.metadata = {}
 end
 
 split_top_level_csv = function(text)
@@ -146,6 +255,28 @@ local function trim(value)
         return nil
     end
     return value
+end
+
+local function trim_empty_lines(lines)
+    lines = type(lines) == "table" and lines or {}
+    if vim.lsp.util.trim_empty_lines then
+        return vim.lsp.util.trim_empty_lines(lines)
+    end
+
+    local first = 1
+    local last = #lines
+    while first <= last and trim(lines[first]) == nil do
+        first = first + 1
+    end
+    while last >= first and trim(lines[last]) == nil do
+        last = last - 1
+    end
+
+    local out = {}
+    for i = first, last do
+        out[#out + 1] = lines[i]
+    end
+    return out
 end
 
 local function push_text(parts, value)
@@ -441,6 +572,25 @@ local function index_symbol_source(sym, by_source)
     table.insert(by_source[file], sym)
 end
 
+local function index_symbol_member(sym, by_container, by_container_member, by_container_member_names)
+    local container = as_string(sym.container)
+    local member_name = as_string(sym.display) or as_string(sym.name)
+    if not container or container == "" or not member_name or member_name == "" then
+        return
+    end
+
+    by_container[container] = by_container[container] or {}
+    table.insert(by_container[container], sym)
+
+    by_container_member[container] = by_container_member[container] or {}
+    if not by_container_member[container][member_name] then
+        by_container_member[container][member_name] = {}
+        by_container_member_names[container] = by_container_member_names[container] or {}
+        table.insert(by_container_member_names[container], member_name)
+    end
+    table.insert(by_container_member[container][member_name], sym)
+end
+
 local function build_search_text(sym)
     if as_string(sym.search_text) then
         return sym.search_text
@@ -520,6 +670,9 @@ local function load_index()
     state.by_key = {}
     state.by_source = {}
     state.by_diagnostic = {}
+    state.by_container = {}
+    state.by_container_member = {}
+    state.by_container_member_names = {}
     state.symbols = {}
     state.index = {
         format = nil,
@@ -582,6 +735,7 @@ local function load_index()
             table.insert(state.symbols, sym)
             index_symbol(sym, state.by_key)
             index_symbol_source(sym, state.by_source)
+            index_symbol_member(sym, state.by_container, state.by_container_member, state.by_container_member_names)
         end
 
         for _, diag in ipairs(as_list(data.diagnostics)) do
@@ -2625,9 +2779,7 @@ end
 
 function M.find_symbol_for_hover_lines(lines, opts)
     load_index()
-    if type(lines) ~= "table" or #lines == 0 then
-        return nil
-    end
+    lines = type(lines) == "table" and lines or {}
 
     local parsed = parse_hover_symbol_context(lines, opts)
     local module_name = parsed.module_name
@@ -2926,18 +3078,19 @@ local function prefix_member_candidates_for_type(type_name, prefix)
             local type_tail = current:match("([%w_]+)$") or current
             local type_module = current:match("^(.*)%.([%w_]+)$")
 
-            for _, sym in ipairs(state.symbols or {}) do
-                local container = as_string(sym.container)
-                local member_name = symbol_name(sym)
-                if container == type_tail and member_name and member_name ~= "" then
-                    local module_name = as_string(sym.module)
-                    local module_match = (type_module == nil or type_module == "" or module_name == type_module)
-                    local prefix_match = (prefix == "" or member_name:sub(1, #prefix) == prefix)
-                    if module_match and prefix_match then
-                        local sid = as_string(sym.id) or as_string(sym.fqname)
-                        if sid and not seen[sid] then
-                            seen[sid] = true
-                            table.insert(out, sym)
+            local members = state.by_container_member[type_tail] or {}
+            for _, member_name in ipairs(state.by_container_member_names[type_tail] or {}) do
+                if prefix == "" or member_name:sub(1, #prefix) == prefix then
+                    for _, sym in ipairs(members[member_name] or {}) do
+                        local container = as_string(sym.container)
+                        local module_name = as_string(sym.module)
+                        local module_match = container == type_tail and (type_module == nil or type_module == "" or module_name == type_module)
+                        if module_match then
+                            local sid = as_string(sym.id) or as_string(sym.fqname)
+                            if sid and not seen[sid] then
+                                seen[sid] = true
+                                table.insert(out, sym)
+                            end
                         end
                     end
                 end
@@ -3696,7 +3849,7 @@ local function lsp_hover_lines_at(line_nr, col0)
         if result and result.contents then
             local ok, markdown_lines = pcall(vim.lsp.util.convert_input_to_markdown_lines, result.contents)
             if ok and type(markdown_lines) == "table" then
-                markdown_lines = vim.lsp.util.trim_empty_lines(markdown_lines)
+                markdown_lines = trim_empty_lines(markdown_lines)
                 if #markdown_lines > 0 then
                     return markdown_lines
                 end
@@ -4419,12 +4572,9 @@ function M.show_symbol(sym)
         return
     end
 
-    local lines = flatten_lines(build_hover_markdown(sym))
-    local bufnr, winid = vim.lsp.util.open_floating_preview(lines, "markdown", {
-        border = "rounded",
-        max_width = 100,
-        max_height = 30,
-    })
+    local lines = M.hover_markdown_for_symbol(sym) or {}
+    append_debug_log(("[show_symbol] fqname=%s lines=%d"):format(tostring(sym.fqname or sym.id), #lines))
+    local bufnr, winid = open_docs_preview(lines)
     set_preview_state(bufnr, winid, nil)
 end
 
@@ -4488,11 +4638,7 @@ function M.open_preview(lines, opts)
     opts = as_table(opts) or {}
     local action = as_table(opts.action)
     append_debug_log(("[preview] open lines=%d action=%s"):format(#lines, tostring(action and action.sym and (action.sym.fqname or action.sym.id) or nil)))
-    local bufnr, winid = vim.lsp.util.open_floating_preview(lines, "markdown", {
-        border = "rounded",
-        max_width = 100,
-        max_height = 30,
-    })
+    local bufnr, winid = open_docs_preview(lines)
     set_preview_state(bufnr, winid, action)
     if action and bufnr and vim.api.nvim_buf_is_valid(bufnr) then
         vim.keymap.set("n", "<CR>", function()
@@ -4524,6 +4670,15 @@ function M.follow_preview_action()
         return true
     end
     return false
+end
+
+function M.close_preview()
+    close_docs_preview()
+end
+
+function M.preview_visible()
+    local _, win = get_preview_state()
+    return win ~= nil and vim.api.nvim_win_is_valid(win)
 end
 
 function M.scroll_preview(key)
@@ -4744,14 +4899,18 @@ function M.set_source(name)
 end
 
 function M.reload()
-    state.loaded = false
-    state.index = nil
-    state.by_key = {}
-    state.by_source = {}
-    state.by_diagnostic = {}
-    state.symbols = {}
-    state.metadata = {}
+    reset_state()
     return load_index()
+end
+
+function M.reset()
+    reset_state()
+end
+
+function M.reload_module()
+    reset_state()
+    package.loaded.cangjie_docs_index = nil
+    return require("cangjie_docs_index").reload()
 end
 
 function M.sync_index(opts, callback)

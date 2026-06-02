@@ -71,7 +71,15 @@ api.nvim_create_user_command("ToggleDiagnostics", function()
     vim.notify("Diagnostics: " .. (enabled and "off" or "on"))
 end, { desc = "Toggle diagnostics for current buffer" })
 
-api.nvim_create_user_command("CangjieFormat", function()
+local function cangjie_format_scope()
+    return vim.g.cangjie_format_scope == "file" and "file" or "changed"
+end
+
+local function cangjie_format_scope_label(scope)
+    return scope == "file" and "full file" or "changed lines"
+end
+
+api.nvim_create_user_command("CangjieFormat", function(opts)
     if vim.bo.filetype ~= "Cangjie" then
         vim.notify("Current buffer is not Cangjie", vim.log.levels.WARN)
         return
@@ -83,8 +91,45 @@ api.nvim_create_user_command("CangjieFormat", function()
         return
     end
 
-    conform.format({ async = false, lsp_format = "fallback" })
-end, { desc = "Format current Cangjie buffer" })
+    local format_opts = { async = false, lsp_format = "fallback", bufnr = 0 }
+    if opts.range > 0 then
+        format_opts.range = {
+            start = { opts.line1, 0 },
+            ["end"] = { opts.line2, 0 },
+        }
+    end
+
+    conform.format(format_opts)
+end, { desc = "Format current Cangjie buffer or selected range", range = true })
+
+api.nvim_create_user_command("CangjieFormatScope", function(opts)
+    local action = trim_arg(opts.args)
+    if action == "" then
+        action = "toggle"
+    end
+
+    local next_scope = nil
+    if action == "toggle" then
+        next_scope = cangjie_format_scope() == "changed" and "file" or "changed"
+    elseif action == "changed" or action == "file" then
+        next_scope = action
+    elseif action == "status" then
+        vim.notify("Cangjie format scope: " .. cangjie_format_scope_label(cangjie_format_scope()), vim.log.levels.INFO, { title = "Cangjie" })
+        return
+    else
+        vim.notify("Unknown Cangjie format scope: " .. action, vim.log.levels.WARN, { title = "Cangjie" })
+        return
+    end
+
+    vim.g.cangjie_format_scope = next_scope
+    vim.notify("Cangjie format scope: " .. cangjie_format_scope_label(next_scope), vim.log.levels.INFO, { title = "Cangjie" })
+end, {
+    desc = "Toggle Cangjie format scope",
+    nargs = "?",
+    complete = function()
+        return { "toggle", "changed", "file", "status" }
+    end,
+})
 
 -- Cangjie docs.
 
@@ -120,6 +165,17 @@ api.nvim_create_user_command("CangjieLspInfo", function()
 
     local client = clients[1]
     local workspace = {}
+    local file = vim.api.nvim_buf_get_name(0)
+    local perf = rawget(_G, "CangjiePerf")
+    local source_module = client.config and client.config._cangjie_source_module or nil
+    if not source_module and perf and perf.source_module then
+        source_module = perf.source_module(file ~= "" and file or client.config.root_dir)
+    end
+    local init_options = client.config and client.config._cangjie_init_options or nil
+    local has_multi_module = init_options
+        and init_options.multiModuleOption
+        and next(init_options.multiModuleOption) ~= nil
+    local warm_stats = client.config and client.config._cangjie_warm_stats or {}
 
     for _, folder in ipairs(client.workspace_folders or {}) do
         table.insert(workspace, folder.name or folder.uri or vim.inspect(folder))
@@ -132,10 +188,33 @@ api.nvim_create_user_command("CangjieLspInfo", function()
     vim.notify(
         table.concat({
             ("buf=%d"):format(vim.api.nvim_get_current_buf()),
-            ("file=%s"):format(vim.api.nvim_buf_get_name(0)),
+            ("file=%s"):format(file),
             ("filetype=%s"):format(vim.bo.filetype),
             ("root=%s"):format(client.config.root_dir or "nil"),
             ("workspace=%s"):format(table.concat(workspace, ", ")),
+            ("module=%s"):format(source_module and source_module.name or "nil"),
+            ("src_path=%s"):format(source_module and source_module.src_path or "nil"),
+            ("multiModuleOption=%s"):format(has_multi_module and "yes" or "no"),
+            ("warm_package_files=%s"):format(tostring(vim.b.cangjie_lsp_warmed_package_files or 0)),
+            ("warm_queued_files=%s"):format(tostring(warm_stats.queued_files or vim.b.cangjie_lsp_warm_queued_files or 0)),
+            ("warm_total_files=%s"):format(tostring(warm_stats.warmed_files or 0)),
+            ("warm_skipped_large=%s"):format(tostring(warm_stats.skipped_large_files or 0)),
+            ("warm_last_batch_ms=%s"):format(tostring(warm_stats.last_elapsed_ms or 0)),
+            ("warm_last_reason=%s"):format(tostring(warm_stats.last_reason or "none")),
+            ("warm_progress=%s/%s %s%%"):format(
+                tostring(warm_stats.progress_done or 0),
+                tostring(warm_stats.progress_total or 0),
+                tostring(warm_stats.progress_percent or 0)
+            ),
+            ("suppressed_warm_diagnostics=%s"):format(tostring(warm_stats.suppressed_warm_diagnostics or 0)),
+            ("diagnostic_display_refreshes=%s"):format(tostring(warm_stats.diagnostic_display_refreshes or 0)),
+            ("diagnostic_display_buffers=%s"):format(tostring(warm_stats.diagnostic_display_buffers or 0)),
+            ("diagnostic_cursor_events=%s"):format(tostring(warm_stats.diagnostic_cursor_events or 0)),
+            ("diagnostic_refresh_last_reason=%s"):format(tostring(warm_stats.diagnostic_refresh_last_reason or "none")),
+            ("explorer_seen=%s"):format(tostring(warm_stats.explorer_seen or 0)),
+            ("explorer_diag_updates=%s"):format(tostring(warm_stats.explorer_diag_updates or 0)),
+            ("explorer_refreshes=%s"):format(tostring(warm_stats.explorer_refreshes or 0)),
+            ("explorer_last_reason=%s"):format(tostring(warm_stats.explorer_last_reason or "none")),
             "",
             "primary=completion hover definition references signatureHelp symbols semanticTokens diagnostics",
             "limited=rename (may return empty edits)",
@@ -151,6 +230,10 @@ end, { desc = "Show current Cangjie LSP root/workspace info" })
 api.nvim_create_user_command("CangjieLspCaps", function()
     load_cangjie_lsp_config()._codex_lsp_capabilities_info()
 end, { desc = "Show current Cangjie LSP method capabilities" })
+
+api.nvim_create_user_command("CangjieExplorerRefresh", function()
+    load_cangjie_lsp_config()._codex_refresh_explorer(true)
+end, { desc = "Refresh open Snacks explorer pickers and show debug info" })
 
 api.nvim_create_user_command("CangjieCompletionDebug", function()
     load_cangjie_lsp_config()._codex_debug_completion_probe()

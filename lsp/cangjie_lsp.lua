@@ -11,6 +11,25 @@ local restart_delay_ms = 1200
 local restart_burst_window_ms = 60000
 local restart_burst_limit = 5
 
+local function cangjie_perf()
+    return rawget(_G, "CangjiePerf")
+end
+
+local function cangjie_perf_enabled(bufnr)
+    local perf = cangjie_perf()
+    return perf and perf.enabled and perf.enabled(bufnr) or false
+end
+
+local function make_cmd()
+    local cmd = { server, "--test" }
+    if vim.g.cangjie_lsp_debug == true then
+        vim.list_extend(cmd, { "--enable-log=true", "--log-path=/tmp/" })
+    else
+        vim.list_extend(cmd, { "--enable-log=false" })
+    end
+    return cmd
+end
+
 local function make_capabilities()
     local capabilities = vim.lsp.protocol.make_client_capabilities()
 
@@ -32,13 +51,25 @@ local capabilities = make_capabilities()
 local ignore_codes = {
     [162] = true,
     [463] = true,
+    [466] = true,
     [751] = true,
     [753] = true,
     [781] = true,
 }
 
 local function get_docs_index()
-    return assert(dofile(vim.fn.stdpath("config") .. "/lua/cangjie_docs_index.lua"))
+    local path = vim.fn.stdpath("config") .. "/lua/cangjie_docs_index.lua"
+    local stat = (vim.uv or vim.loop).fs_stat(path)
+    local mtime = stat and stat.mtime and ("%s.%s"):format(tostring(stat.mtime.sec), tostring(stat.mtime.nsec or 0)) or nil
+    local loaded = package.loaded.cangjie_docs_index
+    if loaded and loaded._source_mtime == mtime then
+        return loaded
+    end
+
+    package.loaded.cangjie_docs_index = nil
+    local docs = require("cangjie_docs_index")
+    docs._source_mtime = mtime
+    return docs
 end
 
 local function trim_text(value)
@@ -47,6 +78,28 @@ local function trim_text(value)
     end
     value = value:gsub("^%s+", ""):gsub("%s+$", "")
     return value ~= "" and value or nil
+end
+
+local function trim_empty_lines(lines)
+    lines = type(lines) == "table" and lines or {}
+    if vim.lsp.util.trim_empty_lines then
+        return vim.lsp.util.trim_empty_lines(lines)
+    end
+
+    local first = 1
+    local last = #lines
+    while first <= last and trim_text(lines[first]) == nil do
+        first = first + 1
+    end
+    while last >= first and trim_text(lines[last]) == nil do
+        last = last - 1
+    end
+
+    local out = {}
+    for i = first, last do
+        out[#out + 1] = lines[i]
+    end
+    return out
 end
 
 local function sanitize_lookup_type_name(type_name)
@@ -171,11 +224,7 @@ local function schedule_cangjie_lsp_restart(reason)
     local now = vim.uv.now()
     prune_restart_attempts(now)
     if #restart_state.attempts >= restart_burst_limit then
-        vim.notify(
-            "Cangjie LSP exited too frequently; auto restart paused. Check /tmp LSP logs before restarting manually.",
-            vim.log.levels.ERROR,
-            { title = "Cangjie LSP" }
-        )
+        vim.notify("Cangjie LSP exited too frequently; auto restart paused. Check /tmp LSP logs before restarting manually.", vim.log.levels.ERROR, { title = "Cangjie LSP" })
         return
     end
 
@@ -404,6 +453,10 @@ local function setup_cangjie_inlay_hints(client, bufnr)
 end
 
 local function ensure_cangjie_document_highlight_autocmds(client, bufnr)
+    if cangjie_perf_enabled(bufnr) and vim.g.cangjie_perf_document_highlight ~= true then
+        vim.b[bufnr].cangjie_document_highlight_skipped = true
+        return
+    end
     if not (client and client.supports_method and client.supports_method("textDocument/documentHighlight", bufnr)) then
         return
     end
@@ -443,17 +496,947 @@ end
 
 local function resolve_root_dir(bufnr)
     local fname = vim.api.nvim_buf_get_name(bufnr)
+    local perf = cangjie_perf()
+    if perf and perf.root_dir then
+        return perf.root_dir(fname ~= "" and fname or bufnr)
+    end
+
     local project_root = util.root_pattern("cjpm.toml")(fname)
     if project_root then
         return project_root
     end
 
     local dir = vim.fs.dirname(fname)
-    if dir and vim.fs.basename(fname) == "main.cj" then
-        return dir
+    if dir then
+        local git_root = util.find_git_ancestor(fname)
+        if git_root then
+            return git_root
+        end
+        if vim.fs.basename(fname) == "main.cj" then
+            return dir
+        end
     end
 
     return dir or vim.fn.getcwd()
+end
+
+local function source_module_for_path(path)
+    local perf = cangjie_perf()
+    if perf and perf.source_module then
+        return perf.source_module(path)
+    end
+end
+
+local function source_module_init_options(source_module)
+    if not (source_module and source_module.name and source_module.root and source_module.src_path) then
+        return nil
+    end
+
+    local root_uri = vim.uri_from_fname(source_module.root)
+    return {
+        multiModuleOption = {
+            [root_uri] = {
+                name = source_module.name,
+                src_path = source_module.src_path,
+                requires = {},
+            },
+        },
+    }
+end
+
+local package_cj_files
+local current_cangjie_client
+local schedule_explorer_refresh
+
+local function warm_stats(client)
+    if not (client and client.config) then
+        return nil
+    end
+    client.config._cangjie_warm_stats = client.config._cangjie_warm_stats
+        or {
+            warmed_files = 0,
+            skipped_large_files = 0,
+            skipped_read_files = 0,
+            queued_files = 0,
+            packages = {},
+            last_elapsed_ms = 0,
+            last_reason = "none",
+            explorer_refreshes = 0,
+            explorer_last_reason = "none",
+            suppressed_warm_diagnostics = 0,
+            progress_done = 0,
+            progress_total = 0,
+            progress_percent = 0,
+            diagnostic_display_refreshes = 0,
+            diagnostic_display_buffers = 0,
+            diagnostic_cursor_events = 0,
+            diagnostic_refresh_last_reason = "none",
+        }
+    return client.config._cangjie_warm_stats
+end
+
+local function warm_progress_state(client)
+    if not (client and client.config) then
+        return nil
+    end
+    client.config._cangjie_warm_progress = client.config._cangjie_warm_progress
+        or {
+            id = ("cangjie-warm-%s"):format(tostring(client.id or "client")),
+            token = ("cangjie-warm-%s"):format(tostring(client.id or "client")),
+            active = false,
+            done = 0,
+            total = 0,
+            last_update_ms = 0,
+            last_percent = -1,
+            settle_generation = 0,
+        }
+    return client.config._cangjie_warm_progress
+end
+
+local function now_ms()
+    return math.floor((vim.uv or vim.loop).hrtime() / 1000000)
+end
+
+local function warm_progress_bar(done, total)
+    local width = vim.g.cangjie_lsp_warm_progress_width or 20
+    total = math.max(total or 0, 1)
+    local percent = math.min(100, math.floor((done or 0) * 100 / total))
+    local filled = math.floor(width * percent / 100)
+    if vim.g.cangjie_lsp_warm_progress_style == "ascii" then
+        return ("[%s%s]"):format(string.rep("#", filled), string.rep(".", width - filled)), percent
+    end
+
+    return ("%s%s"):format(string.rep("█", filled), string.rep("░", width - filled)), percent
+end
+
+local function warm_progress_label(reason)
+    local labels = {
+        ["starting"] = "Preparing source index",
+        ["warming"] = "Indexing source files",
+        ["settling diagnostics"] = "Settling diagnostics",
+        ["done"] = "Source index ready",
+        ["current-package"] = "Queueing current package",
+        ["direct-import"] = "Queueing imports",
+        ["on-demand"] = "Queueing symbol package",
+    }
+    return labels[reason or ""] or reason or "Working"
+end
+
+local function warm_progress_stage(reason)
+    local stages = {
+        ["starting"] = "prepare",
+        ["current-package"] = "queue",
+        ["direct-import"] = "queue",
+        ["on-demand"] = "queue",
+        ["queued"] = "queue",
+        ["warming"] = "index",
+        ["settling diagnostics"] = "settle",
+        ["done"] = "ready",
+    }
+    return stages[reason or ""] or "index"
+end
+
+local function warm_progress_stage_label(stage)
+    local labels = {
+        prepare = "prepare",
+        queue = "queue",
+        index = "index",
+        settle = "settle",
+        ready = "ready",
+    }
+    return labels[stage or ""] or stage or "index"
+end
+
+local function emit_lsp_warm_progress(client, reason, percent)
+    if not (client and client.id) then
+        return false
+    end
+    local progress = warm_progress_state(client)
+    if not progress then
+        return false
+    end
+
+    local kind
+    if reason == "done" then
+        kind = "end"
+    elseif progress.lsp_started then
+        kind = "report"
+    else
+        kind = "begin"
+        progress.lsp_started = true
+    end
+
+    local message = ("%d/%d files"):format(progress.done or 0, progress.total or 0)
+    local stage = warm_progress_stage(reason)
+
+    local ok = pcall(vim.api.nvim_exec_autocmds, "LspProgress", {
+        pattern = kind,
+        modeline = false,
+        data = {
+            client_id = client.id,
+            params = {
+                token = progress.token,
+                value = {
+                    kind = kind,
+                    title = "Cangjie source index",
+                    message = message,
+                    percentage = percent,
+                    detail = warm_progress_label(reason),
+                    stage = stage,
+                    stage_label = warm_progress_stage_label(stage),
+                },
+            },
+        },
+    })
+
+    if reason == "done" then
+        progress.lsp_started = false
+    end
+    return ok
+end
+
+local function update_warm_progress_stats(client, progress)
+    local stats = warm_stats(client)
+    if not stats or not progress then
+        return
+    end
+    stats.progress_done = progress.done or 0
+    stats.progress_total = progress.total or 0
+    stats.progress_percent = progress.total and progress.total > 0 and math.floor((progress.done or 0) * 100 / progress.total) or 0
+end
+
+local function notify_warm_progress(client, reason, force)
+    if vim.g.cangjie_lsp_warm_progress == false then
+        return
+    end
+    local progress = warm_progress_state(client)
+    if not progress or not progress.active or (progress.total or 0) == 0 then
+        return
+    end
+
+    local percent = math.min(100, math.floor((progress.done or 0) * 100 / math.max(progress.total or 0, 1)))
+    local now = now_ms()
+    local min_interval = vim.g.cangjie_lsp_warm_progress_min_interval_ms or 200
+    if not force and percent == progress.last_percent and now - (progress.last_update_ms or 0) < min_interval then
+        return
+    end
+    if not force and now - (progress.last_update_ms or 0) < min_interval and percent < 100 then
+        return
+    end
+
+    progress.last_update_ms = now
+    progress.last_percent = percent
+    if vim.g.cangjie_lsp_warm_progress_backend ~= "notify" and emit_lsp_warm_progress(client, reason, percent) then
+        return
+    end
+
+    local bar, display_percent = warm_progress_bar(progress.done, progress.total)
+    local label = warm_progress_label(reason)
+    local message = ("%s\n%s  %3d%%  %d/%d files"):format(label, bar, display_percent, progress.done or 0, progress.total or 0)
+
+    local ok, notify_id = pcall(vim.notify, message, vim.log.levels.INFO, {
+        title = "Cangjie LSP",
+        id = progress.id,
+        replace = progress.notify_id or progress.id,
+        timeout = percent >= 100 and reason == "done" and 1800 or false,
+    })
+    if ok and notify_id then
+        progress.notify_id = notify_id
+    end
+end
+
+local function reset_warm_progress(client)
+    local progress = warm_progress_state(client)
+    if not progress then
+        return
+    end
+    progress.active = false
+    progress.last_percent = -1
+end
+
+local diagnostic_display_refresh_generation = 0
+
+local function refresh_cangjie_diagnostic_display(reason)
+    local touched = {}
+    local buffer_count = 0
+    for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+        local name = vim.api.nvim_buf_is_valid(bufnr) and vim.api.nvim_buf_get_name(bufnr) or ""
+        if name:match("%.cj$") and vim.api.nvim_buf_is_loaded(bufnr) then
+            pcall(vim.diagnostic.show, nil, bufnr)
+            touched[bufnr] = true
+            buffer_count = buffer_count + 1
+        end
+    end
+    local cursor_events = 0
+    for _, win in ipairs(vim.api.nvim_list_wins()) do
+        local bufnr = vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) or nil
+        if bufnr and touched[bufnr] then
+            pcall(vim.api.nvim_exec_autocmds, "CursorMoved", {
+                buffer = bufnr,
+                modeline = false,
+            })
+            cursor_events = cursor_events + 1
+            if vim.fn.mode():find("^i") then
+                pcall(vim.api.nvim_exec_autocmds, "CursorMovedI", {
+                    buffer = bufnr,
+                    modeline = false,
+                })
+                cursor_events = cursor_events + 1
+            end
+        end
+    end
+    local stats = current_cangjie_client and warm_stats(current_cangjie_client()) or nil
+    if stats then
+        stats.diagnostic_display_refreshes = (stats.diagnostic_display_refreshes or 0) + 1
+        stats.diagnostic_display_buffers = buffer_count
+        stats.diagnostic_cursor_events = cursor_events
+        stats.diagnostic_refresh_last_reason = reason or "unknown"
+    end
+    if vim.api.nvim__redraw then
+        pcall(vim.api.nvim__redraw, { flush = true, valid = false })
+    end
+    pcall(vim.cmd, "redraw!")
+end
+
+local function schedule_cangjie_diagnostic_display_refresh(reason)
+    diagnostic_display_refresh_generation = diagnostic_display_refresh_generation + 1
+    local generation = diagnostic_display_refresh_generation
+    vim.defer_fn(function()
+        if generation ~= diagnostic_display_refresh_generation then
+            return
+        end
+        refresh_cangjie_diagnostic_display(reason)
+    end, vim.g.cangjie_lsp_diagnostic_redraw_delay_ms or 80)
+end
+
+local function schedule_warm_progress_done(client, reason)
+    local progress = warm_progress_state(client)
+    if not progress or not progress.active then
+        return
+    end
+    progress.done = progress.total
+    progress.settle_generation = (progress.settle_generation or 0) + 1
+    local generation = progress.settle_generation
+    update_warm_progress_stats(client, progress)
+    notify_warm_progress(client, reason or "settling diagnostics", true)
+
+    vim.defer_fn(function()
+        local current = warm_progress_state(client)
+        if not current or not current.active or current.settle_generation ~= generation then
+            return
+        end
+        current.done = current.total
+        update_warm_progress_stats(client, current)
+        notify_warm_progress(client, "done", true)
+        reset_warm_progress(client)
+        schedule_cangjie_diagnostic_display_refresh("warm-complete")
+        schedule_explorer_refresh("warm-complete")
+    end, vim.g.cangjie_lsp_warm_diagnostics_settle_ms or 1200)
+end
+
+local function warm_package_key(source_module, dir)
+    if not (source_module and source_module.name and dir) then
+        return nil
+    end
+    return source_module.name .. ":" .. vim.fs.normalize(dir)
+end
+
+local explorer_refresh_generation = 0
+local explorer_diagnostic_autocmd_ready = false
+
+local function snacks_picker_module()
+    local snacks = rawget(_G, "Snacks")
+    if not (snacks and snacks.picker and snacks.picker.get) then
+        local ok_snacks, loaded = pcall(require, "snacks")
+        snacks = ok_snacks and loaded or nil
+    end
+    if snacks and snacks.picker and snacks.picker.get then
+        return snacks.picker
+    end
+    local ok_picker, picker = pcall(require, "snacks.picker")
+    if ok_picker and picker and picker.get then
+        return picker
+    end
+end
+
+local function refresh_open_snacks_explorers(reason, notify)
+    local picker_mod = snacks_picker_module()
+    local report = {
+        reason = reason or "unknown",
+        pickers = 0,
+        refreshed = 0,
+        diagnostics_updates = 0,
+    }
+    if not picker_mod then
+        report.error = "snacks.picker unavailable"
+        if notify then
+            vim.notify(vim.inspect(report), vim.log.levels.WARN, { title = "Cangjie Explorer Refresh" })
+        end
+        return report
+    end
+    local ok_diag, diagnostics = pcall(require, "snacks.explorer.diagnostics")
+    local ok_actions, explorer_actions = pcall(require, "snacks.explorer.actions")
+    local pickers = picker_mod.get({ source = "explorer", tab = false }) or {}
+    report.pickers = #pickers
+
+    local function force_picker_redraw(picker)
+        if not picker or picker.closed then
+            return
+        end
+        if picker.list then
+            if picker.list.unpause then
+                pcall(picker.list.unpause, picker.list)
+            end
+            if picker.list.update then
+                pcall(picker.list.update, picker.list, { force = true })
+            end
+            if picker.list.win and picker.list.win.redraw then
+                pcall(picker.list.win.redraw, picker.list.win)
+            end
+        end
+        if picker.input and picker.input.update then
+            pcall(picker.input.update, picker.input)
+        end
+    end
+
+    for _, picker in ipairs(pickers) do
+        if picker and not picker.closed then
+            local picker_info = {
+                cwd = picker.cwd and picker:cwd() or nil,
+                diagnostics = picker.opts and picker.opts.diagnostics,
+                diagnostics_open = picker.opts and picker.opts.diagnostics_open,
+                list_items = picker.list and picker.list.items and #picker.list.items or 0,
+                finder_items = picker.finder and picker.finder.items and #picker.finder.items or 0,
+                cwd_diagnostics = 0,
+                tree_severity = nil,
+            }
+            if picker_info.cwd then
+                for _, diag in ipairs(vim.diagnostic.get()) do
+                    local path = diag.bufnr and vim.api.nvim_buf_is_valid(diag.bufnr) and vim.api.nvim_buf_get_name(diag.bufnr) or nil
+                    if path and path ~= "" then
+                        path = vim.fs.normalize(path)
+                        local cwd = vim.fs.normalize(picker_info.cwd)
+                        if path == cwd or vim.startswith(path, cwd .. "/") then
+                            picker_info.cwd_diagnostics = picker_info.cwd_diagnostics + 1
+                        end
+                    end
+                end
+            end
+            if ok_diag and diagnostics and diagnostics.update and picker.cwd then
+                local ok_update = pcall(diagnostics.update, picker:cwd())
+                if ok_update then
+                    report.diagnostics_updates = report.diagnostics_updates + 1
+                end
+            end
+            local ok_tree, tree = pcall(require, "snacks.explorer.tree")
+            if ok_tree and tree and tree.find and picker_info.cwd then
+                local ok_node, node = pcall(tree.find, tree, picker_info.cwd)
+                picker_info.tree_severity = ok_node and node and node.severity or nil
+            end
+            if picker.list and picker.list.set_target then
+                pcall(picker.list.set_target, picker.list)
+            end
+            if ok_actions and explorer_actions and explorer_actions.update then
+                local ok_update = pcall(explorer_actions.update, picker, { refresh = true })
+                if not ok_update then
+                    force_picker_redraw(picker)
+                end
+                vim.defer_fn(function()
+                    force_picker_redraw(picker)
+                end, 80)
+            elseif picker.find then
+                local ok_find = pcall(picker.find, picker, {
+                    refresh = true,
+                    on_done = function()
+                        force_picker_redraw(picker)
+                    end,
+                })
+                if not ok_find then
+                    force_picker_redraw(picker)
+                end
+            elseif picker.refresh then
+                pcall(picker.refresh, picker)
+                force_picker_redraw(picker)
+            else
+                force_picker_redraw(picker)
+            end
+            report[#report + 1] = picker_info
+            report.refreshed = report.refreshed + 1
+        end
+    end
+
+    local client = current_cangjie_client and current_cangjie_client() or nil
+    local stats = warm_stats(client)
+    if stats then
+        stats.explorer_seen = report.pickers
+        stats.explorer_diag_updates = report.diagnostics_updates
+    end
+    if stats and report.refreshed > 0 then
+        stats.explorer_refreshes = (stats.explorer_refreshes or 0) + report.refreshed
+        stats.explorer_last_reason = reason or "unknown"
+    end
+    if notify then
+        local ok_file, fd = pcall(io.open, "/tmp/cangjie_explorer_refresh.log", "w")
+        if ok_file and fd then
+            fd:write(vim.inspect(report))
+            fd:write("\n")
+            fd:close()
+        end
+        vim.notify(vim.inspect(report), vim.log.levels.INFO, { title = "Cangjie Explorer Refresh" })
+    end
+    return report
+end
+
+schedule_explorer_refresh = function(reason)
+    if vim.g.cangjie_lsp_explorer_refresh == false then
+        return
+    end
+    explorer_refresh_generation = explorer_refresh_generation + 1
+    local generation = explorer_refresh_generation
+    vim.defer_fn(function()
+        if generation ~= explorer_refresh_generation then
+            return
+        end
+        refresh_open_snacks_explorers(reason)
+    end, vim.g.cangjie_lsp_explorer_refresh_delay_ms or 450)
+end
+
+local function schedule_explorer_refresh_for_uri(uri, reason)
+    if type(uri) ~= "string" or uri == "" then
+        return
+    end
+    local ok, path = pcall(vim.uri_to_fname, uri)
+    if ok and type(path) == "string" and path:match("%.cj$") then
+        schedule_explorer_refresh(reason)
+    end
+end
+
+local function existing_bufnr_for_path(path)
+    local normalized = path and vim.fs.normalize(path) or nil
+    if not normalized then
+        return nil
+    end
+    for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+        local name = vim.api.nvim_buf_get_name(bufnr)
+        if name ~= "" and vim.fs.normalize(name) == normalized then
+            return bufnr
+        end
+    end
+end
+
+local function user_loaded_buffer_for_path(path)
+    local bufnr = existing_bufnr_for_path(path)
+    return bufnr and vim.api.nvim_buf_is_loaded(bufnr) or false
+end
+
+local function should_suppress_warm_diagnostics(client, uri)
+    if not (client and client.config and client.config._cangjie_warmed_package_files and uri) then
+        return false
+    end
+    local ok, path = pcall(vim.uri_to_fname, uri)
+    if not ok or type(path) ~= "string" then
+        return false
+    end
+    local normalized = vim.fs.normalize(path)
+    return client.config._cangjie_warmed_package_files[normalized] == true and not user_loaded_buffer_for_path(normalized)
+end
+
+local function clear_existing_diagnostics_for_uri(uri)
+    local ok, path = pcall(vim.uri_to_fname, uri)
+    if not ok or type(path) ~= "string" then
+        return
+    end
+    local bufnr = existing_bufnr_for_path(path)
+    if bufnr then
+        vim.diagnostic.reset(nil, bufnr)
+    end
+end
+
+local function ensure_explorer_diagnostic_refresh_autocmd()
+    if explorer_diagnostic_autocmd_ready then
+        return
+    end
+    explorer_diagnostic_autocmd_ready = true
+    vim.api.nvim_create_autocmd("DiagnosticChanged", {
+        group = vim.api.nvim_create_augroup("codex_cangjie_explorer_refresh", { clear = true }),
+        callback = function(ev)
+            local name = ev and ev.buf and vim.api.nvim_buf_is_valid(ev.buf) and vim.api.nvim_buf_get_name(ev.buf) or ""
+            if name:match("%.cj$") then
+                schedule_cangjie_diagnostic_display_refresh("diagnostic-changed")
+                schedule_explorer_refresh("diagnostics-autocmd")
+            end
+        end,
+        desc = "Debounced Snacks explorer refresh for Cangjie diagnostics",
+    })
+end
+
+package_cj_files = function(dir, current, limit)
+    local files = vim.fs.find(function(name, path)
+        if current and name == vim.fs.basename(current) then
+            return false
+        end
+        return name:match("%.cj$") and path == dir
+    end, {
+        path = dir,
+        type = "file",
+        limit = limit,
+    })
+    table.sort(files)
+    return files
+end
+
+local function trim_import_package(import_name)
+    import_name = trim_text(import_name)
+    if not import_name then
+        return nil
+    end
+    import_name = import_name:gsub("%.+$", "")
+    return import_name ~= "" and import_name or nil
+end
+
+local function imported_package_names(lines)
+    local packages = {}
+    local seen = {}
+    for _, line in ipairs(lines or {}) do
+        line = line:gsub("//.*$", "")
+        local package = line:match("^%s*import%s+([%w_%.]+)")
+        if not package then
+            package = line:match("^%s*from%s+([%w_%.]+)%s+import%s+")
+        end
+        package = trim_import_package(package)
+        if package and not seen[package] then
+            seen[package] = true
+            packages[#packages + 1] = package
+        end
+    end
+    return packages
+end
+
+local function import_scan_lines(bufnr)
+    local max_lines = vim.g.cangjie_lsp_warm_import_scan_lines or 200
+    local line_count = vim.api.nvim_buf_line_count(bufnr)
+    return vim.api.nvim_buf_get_lines(bufnr, 0, math.min(line_count, max_lines), false)
+end
+
+local function resolve_source_package_dir(source_module, package_name)
+    if not (source_module and source_module.name and source_module.src_path and package_name) then
+        return nil
+    end
+    if package_name ~= source_module.name and not vim.startswith(package_name, source_module.name .. ".") then
+        return nil
+    end
+
+    local rest = package_name:sub(#source_module.name + 2)
+    local parts = {}
+    for part in rest:gmatch("[^.]+") do
+        parts[#parts + 1] = part
+    end
+
+    while true do
+        local dir = source_module.src_path
+        for _, part in ipairs(parts) do
+            dir = vim.fs.joinpath(dir, part)
+        end
+        if vim.fn.isdirectory(dir) == 1 then
+            return vim.fs.normalize(dir)
+        end
+        if #parts == 0 then
+            return nil
+        end
+        table.remove(parts)
+    end
+end
+
+local function current_import_package_dirs(bufnr, source_module)
+    local lines = import_scan_lines(bufnr)
+    local dirs = {}
+    local seen = {}
+    for _, package_name in ipairs(imported_package_names(lines)) do
+        local dir = resolve_source_package_dir(source_module, package_name)
+        if dir and not seen[dir] then
+            seen[dir] = true
+            dirs[#dirs + 1] = dir
+        end
+    end
+    table.sort(dirs)
+    return dirs
+end
+
+local function source_package_dir_from_symbol(source_module, symbol)
+    local name = symbol and (symbol.fqname or symbol.id or symbol.name) or nil
+    if type(name) ~= "string" or name == "" then
+        return nil
+    end
+    return resolve_source_package_dir(source_module, name)
+end
+
+local function warm_package_file(client, path)
+    client.config._cangjie_warmed_package_files = client.config._cangjie_warmed_package_files or {}
+    local normalized = vim.fs.normalize(path)
+    if client.config._cangjie_warmed_package_files[normalized] then
+        return false, "duplicate"
+    end
+
+    local max_bytes = vim.g.cangjie_lsp_warm_package_max_file_bytes or (512 * 1024)
+    local stat = (vim.uv or vim.loop).fs_stat(normalized)
+    if not stat or stat.type ~= "file" or stat.size > max_bytes then
+        local stats = warm_stats(client)
+        if stats and stat and stat.type == "file" and stat.size > max_bytes then
+            stats.skipped_large_files = (stats.skipped_large_files or 0) + 1
+        end
+        return false, "skipped"
+    end
+
+    local ok, lines = pcall(vim.fn.readfile, normalized)
+    if not ok or type(lines) ~= "table" then
+        local stats = warm_stats(client)
+        if stats then
+            stats.skipped_read_files = (stats.skipped_read_files or 0) + 1
+        end
+        return false, "read_error"
+    end
+
+    client.config._cangjie_warmed_package_files[normalized] = true
+    client.notify("textDocument/didOpen", {
+        textDocument = {
+            uri = vim.uri_from_fname(normalized),
+            languageId = "Cangjie",
+            version = 0,
+            text = table.concat(lines, "\n"),
+        },
+    })
+    local stats = warm_stats(client)
+    if stats then
+        stats.warmed_files = (stats.warmed_files or 0) + 1
+    end
+    return true, "warmed"
+end
+
+local function queue_warm_files(client, bufnr, package_dir, files, reason)
+    if not (client and client.config and files and #files > 0) then
+        return 0
+    end
+
+    client.config._cangjie_warm_queue = client.config._cangjie_warm_queue or {}
+    client.config._cangjie_queued_warm_files = client.config._cangjie_queued_warm_files or {}
+    client.config._cangjie_warmed_package_dirs = client.config._cangjie_warmed_package_dirs or {}
+
+    local source_module = client.config._cangjie_source_module
+    local package_key = warm_package_key(source_module, package_dir)
+    if package_key and client.config._cangjie_warmed_package_dirs[package_key] then
+        return 0
+    end
+    if package_key then
+        client.config._cangjie_warmed_package_dirs[package_key] = true
+    end
+
+    local queued = 0
+    for _, path in ipairs(files) do
+        local normalized = vim.fs.normalize(path)
+        if not client.config._cangjie_warmed_package_files or not client.config._cangjie_warmed_package_files[normalized] then
+            if not client.config._cangjie_queued_warm_files[normalized] then
+                client.config._cangjie_queued_warm_files[normalized] = true
+                table.insert(client.config._cangjie_warm_queue, {
+                    path = normalized,
+                    bufnr = bufnr,
+                    package_key = package_key,
+                    reason = reason or "warm",
+                })
+                queued = queued + 1
+            end
+        end
+    end
+
+    local stats = warm_stats(client)
+    if stats then
+        stats.queued_files = #client.config._cangjie_warm_queue
+        stats.last_reason = reason or stats.last_reason
+        if package_key then
+            stats.packages[package_key] = stats.packages[package_key]
+                or {
+                    dir = package_dir,
+                    queued = 0,
+                    warmed = 0,
+                    reason = reason or "warm",
+                }
+            stats.packages[package_key].queued = stats.packages[package_key].queued + queued
+        end
+    end
+    local progress = warm_progress_state(client)
+    if progress and progress.active and queued > 0 then
+        progress.total = (progress.done or 0) + #client.config._cangjie_warm_queue
+        update_warm_progress_stats(client, progress)
+        notify_warm_progress(client, reason or "queued", true)
+    end
+    return queued
+end
+
+local function run_warm_queue(client)
+    if not (client and client.config and client.notify) then
+        return
+    end
+    if client.config._cangjie_warm_queue_running then
+        return
+    end
+
+    client.config._cangjie_warm_queue_running = true
+    local progress = warm_progress_state(client)
+    if progress then
+        progress.active = true
+        progress.done = 0
+        progress.total = #(client.config._cangjie_warm_queue or {})
+        progress.last_update_ms = 0
+        progress.last_percent = -1
+        update_warm_progress_stats(client, progress)
+        notify_warm_progress(client, "starting", true)
+    end
+    local uv = vim.uv or vim.loop
+    local function step()
+        if not (client and client.config and client.notify) then
+            return
+        end
+
+        local queue = client.config._cangjie_warm_queue or {}
+        local stats = warm_stats(client)
+        if #queue == 0 then
+            client.config._cangjie_warm_queue_running = false
+            if stats then
+                stats.queued_files = 0
+            end
+            schedule_warm_progress_done(client, "settling diagnostics")
+            return
+        end
+
+        local started = uv.hrtime()
+        local batch_size = vim.g.cangjie_lsp_warm_batch_size or 5
+        local processed = 0
+        while processed < batch_size and #queue > 0 do
+            local item = table.remove(queue, 1)
+            if item and item.path then
+                client.config._cangjie_queued_warm_files[item.path] = nil
+                local warmed = warm_package_file(client, item.path)
+                if warmed and item.bufnr and vim.api.nvim_buf_is_valid(item.bufnr) then
+                    vim.b[item.bufnr].cangjie_lsp_warmed_package_files = (vim.b[item.bufnr].cangjie_lsp_warmed_package_files or 0) + 1
+                end
+                if warmed and stats and item.package_key and stats.packages[item.package_key] then
+                    stats.packages[item.package_key].warmed = stats.packages[item.package_key].warmed + 1
+                end
+                local item_progress = warm_progress_state(client)
+                if item_progress and item_progress.active then
+                    item_progress.done = math.min((item_progress.done or 0) + 1, item_progress.total or 0)
+                end
+            end
+            processed = processed + 1
+        end
+
+        if stats then
+            stats.queued_files = #queue
+            stats.last_elapsed_ms = math.floor((uv.hrtime() - started) / 1000000)
+        end
+        local batch_progress = warm_progress_state(client)
+        if batch_progress and batch_progress.active then
+            batch_progress.total = math.max(batch_progress.total or 0, (batch_progress.done or 0) + #queue)
+            update_warm_progress_stats(client, batch_progress)
+            notify_warm_progress(client, "warming", false)
+        end
+        vim.defer_fn(step, vim.g.cangjie_lsp_warm_batch_delay_ms or 75)
+    end
+
+    vim.schedule(step)
+end
+
+local function enqueue_package_dir_warm(client, bufnr, dir, current, limit, reason)
+    if not dir then
+        return 0
+    end
+    local files = package_cj_files(dir, current, limit)
+    local queued = queue_warm_files(client, bufnr, dir, files, reason)
+    if queued > 0 then
+        run_warm_queue(client)
+    end
+    return queued
+end
+
+local function warm_current_package_sources(client, bufnr)
+    if vim.g.cangjie_lsp_warm_package_files == false then
+        return
+    end
+    if not (client and client.notify and client.config and client.config._cangjie_source_module) then
+        return
+    end
+    if not vim.api.nvim_buf_is_valid(bufnr) then
+        return
+    end
+
+    local current = vim.api.nvim_buf_get_name(bufnr)
+    local current_dir = current ~= "" and vim.fs.dirname(current) or nil
+    local queued = 0
+    queued = queued + enqueue_package_dir_warm(client, bufnr, current_dir, current, vim.g.cangjie_lsp_warm_package_max_files or 80, "current-package")
+
+    local max_import_dirs = vim.g.cangjie_lsp_warm_import_max_dirs or 8
+    local import_dir_count = 0
+    for _, dir in ipairs(current_import_package_dirs(bufnr, client.config._cangjie_source_module)) do
+        if dir ~= current_dir then
+            import_dir_count = import_dir_count + 1
+            if import_dir_count > max_import_dirs then
+                break
+            end
+            queued = queued + enqueue_package_dir_warm(client, bufnr, dir, nil, vim.g.cangjie_lsp_warm_import_max_files or 40, "direct-import")
+        end
+    end
+    vim.b[bufnr].cangjie_lsp_warm_queued_files = queued
+end
+
+local function warm_symbol_package_on_demand(symbol, reason)
+    if vim.g.cangjie_lsp_warm_on_demand == false then
+        return
+    end
+    local client = current_cangjie_client()
+    local bufnr = vim.api.nvim_get_current_buf()
+    if not (client and client.config and client.config._cangjie_source_module) then
+        return
+    end
+    local dir = source_package_dir_from_symbol(client.config._cangjie_source_module, symbol)
+    if not dir then
+        return
+    end
+    enqueue_package_dir_warm(client, bufnr, dir, nil, vim.g.cangjie_lsp_warm_import_max_files or 40, reason or "on-demand")
+end
+
+local function warm_cursor_symbol_package_on_demand(reason)
+    if vim.g.cangjie_lsp_warm_on_demand == false then
+        return
+    end
+    local docs = get_docs_index()
+    if not (docs.current_cursor_context and docs.find_symbol_for_hover_lines) then
+        return
+    end
+    local context = docs.current_cursor_context()
+    local symbol = docs.find_symbol_for_hover_lines({}, { context = context })
+    if symbol then
+        warm_symbol_package_on_demand(symbol, reason)
+    end
+end
+
+local function configure_source_module_init(init_params, config)
+    local root = config and config.root_dir or nil
+    local source_module = source_module_for_path(root)
+    if not source_module then
+        local root_uri = init_params and init_params.rootUri or nil
+        if root_uri then
+            source_module = source_module_for_path(vim.uri_to_fname(root_uri))
+        end
+    end
+    if not source_module then
+        return
+    end
+
+    local init_options = vim.tbl_deep_extend("force", init_params.initializationOptions or {}, source_module_init_options(source_module) or {})
+    init_params.initializationOptions = init_options
+    if config then
+        config._cangjie_source_module = source_module
+        config._cangjie_init_options = init_options
+    end
 end
 
 local function hover_markdown_lines(result)
@@ -464,7 +1447,7 @@ local function hover_markdown_lines(result)
     if not ok or type(lines) ~= "table" then
         return {}
     end
-    lines = vim.lsp.util.trim_empty_lines(lines)
+    lines = trim_empty_lines(lines)
     return lines
 end
 
@@ -525,6 +1508,7 @@ local function docs_from_lsp_locations(method)
             return sym
         end
     end
+    warm_cursor_symbol_package_on_demand(method .. "-empty")
 end
 
 local function source_lines_for_path(path)
@@ -613,13 +1597,7 @@ local function looks_like_source_declaration(line)
         or declaration:match("^var%s+")
         or declaration:match("^let%s+")
         or declaration:match("^const%s+")
-    append_debug_log(
-        ("[source_doc] declaration_check raw=%s stripped=%s matched=%s"):format(
-            tostring(line),
-            tostring(declaration),
-            tostring(matched ~= nil)
-        )
-    )
+    append_debug_log(("[source_doc] declaration_check raw=%s stripped=%s matched=%s"):format(tostring(line), tostring(declaration), tostring(matched ~= nil)))
     return matched ~= nil
 end
 
@@ -682,14 +1660,7 @@ local function render_source_doc_lines(signature, docs)
     while #out > 0 and out[#out] == "" do
         table.remove(out)
     end
-    append_debug_log(
-        ("[source_doc] render signature=%s lines=%d params=%d throws=%d"):format(
-            tostring(signature),
-            #out,
-            param_count,
-            throws_count
-        )
-    )
+    append_debug_log(("[source_doc] render signature=%s lines=%d params=%d throws=%d"):format(tostring(signature), #out, param_count, throws_count))
     return out
 end
 
@@ -703,13 +1674,7 @@ local function source_doc_lines_from_path(path, line0)
     local target = lines[(line0 or 0) + 1]
     local signature = clean_source_signature_line(target)
     if signature and not looks_like_source_declaration(signature) then
-        append_debug_log(
-            ("[source_doc] skip_non_declaration path=%s line=%d signature=%s"):format(
-                tostring(path),
-                (line0 or 0) + 1,
-                tostring(signature)
-            )
-        )
+        append_debug_log(("[source_doc] skip_non_declaration path=%s line=%d signature=%s"):format(tostring(path), (line0 or 0) + 1, tostring(signature)))
         return nil
     end
     local idx = (line0 or 0)
@@ -751,23 +1716,10 @@ local function source_doc_lines_from_path(path, line0)
         end
     end
     if not has_content then
-        append_debug_log(
-            ("[source_doc] empty path=%s line=%d signature=%s"):format(
-                tostring(path),
-                (line0 or 0) + 1,
-                tostring(signature)
-            )
-        )
+        append_debug_log(("[source_doc] empty path=%s line=%d signature=%s"):format(tostring(path), (line0 or 0) + 1, tostring(signature)))
         return nil
     end
-    append_debug_log(
-        ("[source_doc] extracted path=%s line=%d signature=%s raw_lines=%d"):format(
-            tostring(path),
-            (line0 or 0) + 1,
-            tostring(signature),
-            #docs
-        )
-    )
+    append_debug_log(("[source_doc] extracted path=%s line=%d signature=%s raw_lines=%d"):format(tostring(path), (line0 or 0) + 1, tostring(signature), #docs))
     return render_source_doc_lines(signature, docs)
 end
 
@@ -791,6 +1743,7 @@ local function source_doc_lines_from_locations(method)
             end
         end
     end
+    warm_cursor_symbol_package_on_demand(method .. "-empty-source-doc")
 end
 
 local function source_doc_lines_for_cursor()
@@ -931,7 +1884,7 @@ local function debug_snapshot()
     vim.notify(table.concat(parts, "\n"), vim.log.levels.INFO, { title = "Cangjie Docs Debug" })
 end
 
-local function current_cangjie_client()
+current_cangjie_client = function()
     local clients = vim.lsp.get_clients({ bufnr = 0, name = "cangjie_lsp" })
     return clients[1]
 end
@@ -1118,6 +2071,36 @@ local function cangjie_lsp_capabilities_info()
     }
 
     local lines = { ("client=%s"):format(client.name or "cangjie_lsp"), "" }
+    local source_module = client.config and (client.config._cangjie_source_module or source_module_for_path(client.config.root_dir)) or nil
+    if source_module then
+        local stats = client.config and client.config._cangjie_warm_stats or {}
+        lines[#lines + 1] = ("module=%s"):format(source_module.name or "nil")
+        lines[#lines + 1] = ("root=%s"):format(source_module.root or "nil")
+        lines[#lines + 1] = ("src_path=%s"):format(source_module.src_path or "nil")
+        lines[#lines + 1] = ("multiModuleOption=%s"):format(
+            client.config and client.config._cangjie_init_options and client.config._cangjie_init_options.multiModuleOption and "yes" or "unknown"
+        )
+        lines[#lines + 1] = ("warm_package_files=%s"):format(tostring(vim.b.cangjie_lsp_warmed_package_files or 0))
+        lines[#lines + 1] = ("warm_queued_files=%s"):format(tostring(stats.queued_files or vim.b.cangjie_lsp_warm_queued_files or 0))
+        lines[#lines + 1] = ("warm_total_files=%s"):format(tostring(stats.warmed_files or 0))
+        lines[#lines + 1] = ("warm_skipped_large=%s"):format(tostring(stats.skipped_large_files or 0))
+        lines[#lines + 1] = ("warm_last_batch_ms=%s"):format(tostring(stats.last_elapsed_ms or 0))
+        lines[#lines + 1] = ("warm_last_reason=%s"):format(tostring(stats.last_reason or "none"))
+        lines[#lines + 1] = ("warm_progress=%s/%s %s%%"):format(tostring(stats.progress_done or 0), tostring(stats.progress_total or 0), tostring(stats.progress_percent or 0))
+        lines[#lines + 1] = ("suppressed_warm_diagnostics=%s"):format(tostring(stats.suppressed_warm_diagnostics or 0))
+        lines[#lines + 1] = ("diagnostic_display_refreshes=%s"):format(tostring(stats.diagnostic_display_refreshes or 0))
+        lines[#lines + 1] = ("diagnostic_display_buffers=%s"):format(tostring(stats.diagnostic_display_buffers or 0))
+        lines[#lines + 1] = ("diagnostic_cursor_events=%s"):format(tostring(stats.diagnostic_cursor_events or 0))
+        lines[#lines + 1] = ("diagnostic_refresh_last_reason=%s"):format(tostring(stats.diagnostic_refresh_last_reason or "none"))
+        lines[#lines + 1] = ("explorer_seen=%s"):format(tostring(stats.explorer_seen or 0))
+        lines[#lines + 1] = ("explorer_diag_updates=%s"):format(tostring(stats.explorer_diag_updates or 0))
+        lines[#lines + 1] = ("explorer_refreshes=%s"):format(tostring(stats.explorer_refreshes or 0))
+        lines[#lines + 1] = ("explorer_last_reason=%s"):format(tostring(stats.explorer_last_reason or "none"))
+        lines[#lines + 1] = ""
+    elseif client.config and client.config.root_dir then
+        lines[#lines + 1] = ("root=%s"):format(client.config.root_dir)
+        lines[#lines + 1] = ""
+    end
     vim.list_extend(lines, capability_lines(client, "[Standard]", standard))
     lines[#lines + 1] = ""
     vim.list_extend(lines, capability_lines(client, "[Private]", private))
@@ -1184,11 +2167,22 @@ local function docs_from_current_hover()
     local docs = get_docs_index()
     local context = docs.current_cursor_context and docs.current_cursor_context() or nil
     append_debug_log("[hover] context expr=" .. tostring(context and context.expr) .. " ident=" .. tostring(context and context.cursor_ident))
+
+    local function symbol_from_context(reason)
+        local hover_sym = docs.find_symbol_for_hover_lines and docs.find_symbol_for_hover_lines({}, { context = context }) or nil
+        append_debug_log("[hover] " .. reason .. "_fallback_symbol=" .. tostring(hover_sym and (hover_sym.fqname or hover_sym.id) or nil))
+        if hover_sym then
+            warm_symbol_package_on_demand(hover_sym, "hover-" .. reason)
+            return hover_sym, nil
+        end
+        return nil, nil
+    end
+
     local params = make_position_params()
     local results = vim.lsp.buf_request_sync(0, "textDocument/hover", params, 500)
     if not results then
         append_debug_log("[hover] results=nil")
-        return nil, nil
+        return symbol_from_context("nil")
     end
 
     for _, res in pairs(results) do
@@ -1202,7 +2196,7 @@ local function docs_from_current_hover()
     end
 
     append_debug_log("[hover] no_nonempty_lines")
-    return nil, nil
+    return symbol_from_context("empty")
 end
 
 local function cursor_in_call_site()
@@ -1244,9 +2238,139 @@ local function cursor_in_call_site()
     return next_char == "("
 end
 
+local function hover_local_declared_type(lines)
+    local ident = trim_text(vim.fn.expand("<cword>"))
+    if not ident then
+        return nil, nil
+    end
+
+    local escaped_ident = vim.pesc(ident)
+    for _, raw in ipairs(lines or {}) do
+        local line = trim_text(raw)
+        if line then
+            for _, keyword in ipairs({ "let", "var", "const" }) do
+                local type_name = trim_text(line:match("^" .. keyword .. "%s+" .. escaped_ident .. "%s*:%s*(.+)$"))
+                if type_name then
+                    return line, type_name
+                end
+            end
+        end
+    end
+end
+
+local function single_generic_inner_type(type_name)
+    type_name = trim_text(type_name)
+    if not type_name then
+        return nil
+    end
+
+    local start_col = type_name:find("<", 1, true)
+    if not start_col or type_name:sub(-1) ~= ">" then
+        return nil
+    end
+
+    local body = trim_text(type_name:sub(start_col + 1, -2))
+    if not body then
+        return nil
+    end
+
+    local depth = 0
+    for i = 1, #body do
+        local ch = body:sub(i, i)
+        if ch == "<" then
+            depth = depth + 1
+        elseif ch == ">" then
+            depth = depth - 1
+        elseif ch == "," and depth == 0 then
+            return nil
+        end
+    end
+    return body
+end
+
+local function find_type_symbol(docs, type_name)
+    if not (docs and docs.find_symbol) then
+        return nil
+    end
+
+    type_name = trim_text(type_name)
+    local base = sanitize_lookup_type_name(type_name)
+    if type_name then
+        local sym = docs.find_symbol(type_name)
+        if sym then
+            return sym
+        end
+    end
+    if base and base ~= type_name then
+        return docs.find_symbol(base)
+    end
+end
+
+local function show_local_hover_type_docs(docs, hover_sym, hover_lines)
+    if not (docs and hover_sym and hover_lines and #hover_lines > 0) then
+        return false
+    end
+
+    local declaration, type_name = hover_local_declared_type(hover_lines)
+    if not declaration or not type_name then
+        return false
+    end
+
+    local render_lines = docs.hover_markdown_for_symbol and docs.hover_markdown_for_symbol(hover_sym) or nil
+    if not (render_lines and #render_lines > 0) then
+        return false
+    end
+
+    local inner_type = single_generic_inner_type(type_name)
+    local inner_sym = find_type_symbol(docs, inner_type)
+    local lines = {
+        "```cangjie",
+        declaration,
+        "```",
+        "",
+    }
+    if inner_type then
+        lines[#lines + 1] = ("元素类型：`%s`"):format(inner_type)
+        if inner_sym then
+            lines[#lines + 1] = "按 `<CR>` 打开元素类型文档。"
+        end
+        lines[#lines + 1] = ""
+    end
+
+    for _, line in ipairs(render_lines) do
+        lines[#lines + 1] = line
+    end
+
+    append_debug_log(
+        "[K] local_hover_type_docs type="
+            .. tostring(type_name)
+            .. " symbol="
+            .. tostring(hover_sym and (hover_sym.fqname or hover_sym.id) or nil)
+            .. " inner="
+            .. tostring(inner_sym and (inner_sym.fqname or inner_sym.id) or inner_type)
+    )
+    if docs.open_preview then
+        docs.open_preview(lines, inner_sym and { action = { sym = inner_sym } } or nil)
+    else
+        vim.lsp.util.open_floating_preview(lines, "markdown", {
+            border = "rounded",
+            max_width = 100,
+            max_height = 30,
+        })
+    end
+    return true
+end
+
 local function hover_or_local_docs()
     local docs = get_docs_index()
     append_debug_log("[K] start")
+    if docs.preview_visible and docs.preview_visible() then
+        append_debug_log("[K] close_preview")
+        if docs.close_preview then
+            docs.close_preview()
+        end
+        return
+    end
     local local_sym = docs_from_lsp_locations("textDocument/declaration") or docs_from_lsp_locations("textDocument/definition")
     append_debug_log("[K] lsp_locations=" .. tostring(local_sym and (local_sym.fqname or local_sym.id) or nil))
     if local_sym then
@@ -1262,6 +2386,14 @@ local function hover_or_local_docs()
         and ((docs.cursor_has_member_access and docs.cursor_has_member_access()) or cursor_in_call_site() or docs.should_try_lsp_hover())
     append_debug_log("[K] prefer_hover_lines=" .. tostring(prefer_hover_lines))
     if prefer_hover_lines then
+        if hover_sym then
+            append_debug_log("[K] prefer_hover_docs=" .. tostring(hover_sym and (hover_sym.fqname or hover_sym.id) or nil))
+            if show_local_hover_type_docs(docs, hover_sym, hover_lines) then
+                return
+            end
+            docs.show_symbol(hover_sym)
+            return
+        end
         vim.lsp.util.open_floating_preview(hover_lines, "markdown", {
             border = "rounded",
             max_width = 100,
@@ -1270,6 +2402,9 @@ local function hover_or_local_docs()
         return
     end
     if hover_sym then
+        if show_local_hover_type_docs(docs, hover_sym, hover_lines) then
+            return
+        end
         docs.show_symbol(hover_sym)
         return
     end
@@ -1387,9 +2522,7 @@ local function hover_or_local_docs()
         return
     end
 
-    local source_lines = source_doc_lines_from_locations("textDocument/declaration")
-        or source_doc_lines_from_locations("textDocument/definition")
-        or source_doc_lines_for_cursor()
+    local source_lines = source_doc_lines_from_locations("textDocument/declaration") or source_doc_lines_from_locations("textDocument/definition") or source_doc_lines_for_cursor()
     if source_lines then
         vim.lsp.util.open_floating_preview(source_lines, "markdown", {
             border = "rounded",
@@ -1495,11 +2628,7 @@ local function cangjie_inlay_hints_status(bufnr)
     local supported = any_cangjie_client_supports_inlay(bufnr)
     local using_native = use_native_cangjie_inlay(bufnr)
     local pseudo_status = pseudo_inlay_hints().status(bufnr)
-    local enabled = using_native
-            and ih
-            and ih.is_enabled
-            and ih.is_enabled({ bufnr = bufnr })
-        or pseudo_status.enabled
+    local enabled = using_native and ih and ih.is_enabled and ih.is_enabled({ bufnr = bufnr }) or pseudo_status.enabled
     return {
         supported = supported,
         using_native = using_native,
@@ -1598,8 +2727,7 @@ local function show_completion_or_notify()
         vim.b.cangjie_completion_docs_manual = cangjie_manual_completion_docs_enabled()
         append_completion_log("[manual] blink.show")
         blink.show({
-            providers = (cangjie_completion_docs_enabled() or cangjie_manual_completion_docs_enabled())
-                    and { "lsp", "cangjie_docs", "buffer", "path" }
+            providers = (cangjie_completion_docs_enabled() or cangjie_manual_completion_docs_enabled()) and { "lsp", "cangjie_docs", "buffer", "path" }
                 or { "lsp", "buffer", "path" },
         })
         return
@@ -2041,7 +3169,9 @@ local function map_cangjie_keys(bufnr)
         end
     end
 
-    map("n", "K", live("_codex_hover_or_local_docs"), "Cangjie Docs")
+    if not vim.fn.maparg("K", "n", false, true).buffer then
+        map("n", "K", live("_codex_hover_or_local_docs"), "Cangjie Docs")
+    end
     map("n", "gK", live("_codex_signature_help_or_notify"), "Cangjie Signature Help")
     map("n", "gr", live("_codex_references"), "Cangjie References")
     map("n", "<localleader>jr", live("_codex_rename"), "Cangjie Rename")
@@ -2074,15 +3204,29 @@ local function map_cangjie_keys(bufnr)
 end
 
 return {
-    cmd = { server, "--test", "--enable-log=true", "--log-path=/tmp/" },
+    cmd = make_cmd(),
     filetypes = { "Cangjie" },
     root_dir = function(bufnr, on_dir)
         on_dir(resolve_root_dir(bufnr))
     end,
     capabilities = capabilities,
+    before_init = configure_source_module_init,
 
     handlers = {
         ["textDocument/publishDiagnostics"] = function(err, result, ctx, config)
+            local client = ctx and ctx.client_id and vim.lsp.get_client_by_id(ctx.client_id) or nil
+            if result and result.uri and should_suppress_warm_diagnostics(client, result.uri) then
+                local stats = warm_stats(client)
+                if stats then
+                    stats.suppressed_warm_diagnostics = (stats.suppressed_warm_diagnostics or 0) + #(result.diagnostics or {})
+                end
+                clear_existing_diagnostics_for_uri(result.uri)
+                schedule_cangjie_diagnostic_display_refresh("warm-diagnostics-suppressed")
+                schedule_warm_progress_done(client, "settling diagnostics")
+                schedule_explorer_refresh_for_uri(result.uri, "warm-diagnostics-suppressed")
+                return
+            end
+
             if result and result.diagnostics then
                 result.diagnostics = vim.tbl_filter(function(d)
                     local code = tonumber(d.code)
@@ -2100,7 +3244,12 @@ return {
                 end
             end
 
-            return vim.lsp.diagnostic.on_publish_diagnostics(err, result, ctx, config)
+            local ret = vim.lsp.diagnostic.on_publish_diagnostics(err, result, ctx, config)
+            if result and result.uri then
+                schedule_cangjie_diagnostic_display_refresh("diagnostics-publish")
+                schedule_explorer_refresh_for_uri(result.uri, "diagnostics-publish")
+            end
+            return ret
         end,
         ["textDocument/rename"] = function(err, result, ctx)
             if err then
@@ -2125,7 +3274,11 @@ return {
             ensure_cangjie_blink_signature_guard()
             map_cangjie_keys(bufnr)
             ensure_cangjie_document_highlight_autocmds(client, bufnr)
+            ensure_explorer_diagnostic_refresh_autocmd()
             setup_cangjie_inlay_hints(client, bufnr)
+            vim.defer_fn(function()
+                warm_current_package_sources(client, bufnr)
+            end, vim.g.cangjie_lsp_warm_package_delay_ms or 300)
         end)
         vim.notify("Cangjie LSP start success", vim.log.levels.INFO)
     end,
@@ -2175,6 +3328,9 @@ return {
     end,
     _codex_refresh_codelens = function()
         cangjie_codelens("refresh")
+    end,
+    _codex_refresh_explorer = function(notify)
+        refresh_open_snacks_explorers("manual", notify)
     end,
     _codex_show_completion_or_notify = show_completion_or_notify,
     _codex_trigger_completion_after_dot = trigger_completion_after_dot,

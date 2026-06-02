@@ -145,7 +145,7 @@ return {
                         resolved_item = resolved_item or item
                         local bufnr = vim.api.nvim_get_current_buf()
                         if vim.bo.filetype == "Cangjie" and cangjie_docs_active(bufnr) then
-                            local docs = assert(dofile(vim.fn.stdpath("config") .. "/lua/cangjie_docs_index.lua"))
+                            local docs = require("cangjie_docs_index")
                             local matched_sym = docs.find_symbol_for_completion_item(resolved_item)
                             if matched_sym then
                                 resolved_item = vim.deepcopy(resolved_item)

@@ -12,6 +12,9 @@ local state = {
     hover_param_cache = {},
     hover_param_pending = {},
     infer_cache = {},
+    render_ranges = {},
+    hover_render_timers = {},
+    hover_render_lines = {},
 }
 local choose_best_call_symbol
 local infer_expression_type
@@ -26,6 +29,9 @@ local parse_call_expression
 local split_top_level_csv
 local split_args
 local positional_args_count
+local render_line
+local clear_type_marks
+local clear_param_marks
 
 local function trim(s)
     if type(s) ~= "string" then
@@ -35,9 +41,31 @@ local function trim(s)
     return s ~= "" and s or nil
 end
 
+local function trim_empty_lines(lines)
+    lines = type(lines) == "table" and lines or {}
+    if vim.lsp.util.trim_empty_lines then
+        return vim.lsp.util.trim_empty_lines(lines)
+    end
+
+    local first = 1
+    local last = #lines
+    while first <= last and trim(lines[first]) == nil do
+        first = first + 1
+    end
+    while last >= first and trim(lines[last]) == nil do
+        last = last - 1
+    end
+
+    local out = {}
+    for i = first, last do
+        out[#out + 1] = lines[i]
+    end
+    return out
+end
+
 local function docs_index()
     if not docs_module_cache then
-        docs_module_cache = assert(dofile(vim.fn.stdpath("config") .. "/lua/cangjie_docs_index.lua"))
+        docs_module_cache = require("cangjie_docs_index")
     end
     return docs_module_cache
 end
@@ -121,6 +149,38 @@ local function cursor_delay_ms()
         return delay
     end
     return 350
+end
+
+local function large_file_line_threshold()
+    local threshold = tonumber(vim.g.cangjie_pseudo_inlay_hints_large_file_lines)
+    if threshold and threshold > 0 then
+        return threshold
+    end
+    return 2000
+end
+
+local function large_file_byte_threshold()
+    local threshold = tonumber(vim.g.cangjie_pseudo_inlay_hints_large_file_bytes)
+    if threshold and threshold > 0 then
+        return threshold
+    end
+    return 512 * 1024
+end
+
+local function large_file_auto_skip(bufnr)
+    if not vim.api.nvim_buf_is_valid(bufnr) then
+        return false
+    end
+    if vim.api.nvim_buf_line_count(bufnr) >= large_file_line_threshold() then
+        return true
+    end
+
+    local name = vim.api.nvim_buf_get_name(bufnr)
+    if name == "" then
+        return false
+    end
+    local ok, stat = pcall(vim.uv.fs_stat, name)
+    return ok and stat and stat.size and stat.size >= large_file_byte_threshold()
 end
 
 local function parameter_hint_mode()
@@ -1213,7 +1273,7 @@ local function hover_lines_at(bufnr, line_nr, col0)
         if result and result.contents then
             local ok, lines = pcall(vim.lsp.util.convert_input_to_markdown_lines, result.contents)
             if ok and type(lines) == "table" then
-                return vim.lsp.util.trim_empty_lines(lines)
+                return trim_empty_lines(lines)
             end
         end
     end
@@ -1275,15 +1335,65 @@ local function parse_hover_type_lines(lines, expr, call)
     end
 end
 
-local function rerender_after_async_hover(bufnr)
-    vim.schedule(function()
-        if not vim.api.nvim_buf_is_valid(bufnr) then
-            return
-        end
-        if vim.bo[bufnr].filetype ~= "Cangjie" or vim.api.nvim_get_mode().mode:match("^i") then
-            return
-        end
-        M.render(bufnr, { force = false, cursor_only = false })
+local function cursor_context_for_buf(bufnr)
+    local winid = preferred_win_for_buf(bufnr)
+    local cursor = winid and vim.api.nvim_win_is_valid(winid) and vim.api.nvim_win_get_cursor(winid)
+        or vim.api.nvim_win_get_cursor(0)
+    return (cursor[1] or 1) - 1, (cursor[2] or 0) + 1
+end
+
+local function render_single_line(bufnr, line_nr)
+    if not vim.api.nvim_buf_is_valid(bufnr) or line_nr < 0 or line_nr >= vim.api.nvim_buf_line_count(bufnr) then
+        return
+    end
+    if vim.bo[bufnr].filetype ~= "Cangjie" or not enabled() or vim.api.nvim_get_mode().mode:match("^i") then
+        return
+    end
+
+    local cursor_line, cursor_col1 = cursor_context_for_buf(bufnr)
+    local line = vim.api.nvim_buf_get_lines(bufnr, line_nr, line_nr + 1, false)[1] or ""
+    clear_type_marks(bufnr, line_nr, line_nr + 1)
+    clear_param_marks(bufnr, line_nr, line_nr + 1)
+    render_line(bufnr, line_nr, line, {
+        parameter_hints = line_nr == cursor_line,
+        cursor_col1 = line_nr == cursor_line and cursor_col1 or nil,
+        type_hints = true,
+    })
+end
+
+local function rerender_after_async_hover(bufnr, line_nr)
+    if not vim.api.nvim_buf_is_valid(bufnr) then
+        return
+    end
+    state.hover_render_lines[bufnr] = state.hover_render_lines[bufnr] or {}
+    if type(line_nr) == "number" then
+        state.hover_render_lines[bufnr][line_nr] = true
+    end
+
+    local timer = state.hover_render_timers[bufnr]
+    if timer then
+        timer:stop()
+        timer:close()
+    end
+
+    timer = vim.uv.new_timer()
+    state.hover_render_timers[bufnr] = timer
+    timer:start(50, 0, function()
+        vim.schedule(function()
+            if timer == state.hover_render_timers[bufnr] then
+                state.hover_render_timers[bufnr] = nil
+            end
+            if timer and not timer:is_closing() then
+                timer:stop()
+                timer:close()
+            end
+
+            local lines = state.hover_render_lines[bufnr] or {}
+            state.hover_render_lines[bufnr] = nil
+            for pending_line in pairs(lines) do
+                render_single_line(bufnr, pending_line)
+            end
+        end)
     end)
 end
 
@@ -1317,15 +1427,15 @@ local function request_hover_type_async(bufnr, line_nr, expr, line_text, hover_c
         local line_cache = line_hover_cache(bufnr, line_nr, line_text)
         if err or not result or not result.contents then
             line_cache.values[expr] = false
-            rerender_after_async_hover(bufnr)
+            rerender_after_async_hover(bufnr, line_nr)
             return
         end
 
         local ok, lines = pcall(vim.lsp.util.convert_input_to_markdown_lines, result.contents)
-        lines = ok and type(lines) == "table" and vim.lsp.util.trim_empty_lines(lines) or {}
+        lines = ok and type(lines) == "table" and trim_empty_lines(lines) or {}
         local resolved = parse_hover_type_lines(lines, expr, call)
         line_cache.values[expr] = resolved or false
-        rerender_after_async_hover(bufnr)
+        rerender_after_async_hover(bufnr, line_nr)
     end, bufnr)
 end
 
@@ -1390,15 +1500,15 @@ local function request_hover_param_labels_async(bufnr, line_nr, callee_start_col
         local line_cache = line_param_cache(bufnr, line_nr, line_text)
         if err or not result or not result.contents then
             line_cache.values[cache_key] = false
-            rerender_after_async_hover(bufnr)
+            rerender_after_async_hover(bufnr, line_nr)
             return
         end
 
         local ok, lines = pcall(vim.lsp.util.convert_input_to_markdown_lines, result.contents)
-        lines = ok and type(lines) == "table" and vim.lsp.util.trim_empty_lines(lines) or {}
+        lines = ok and type(lines) == "table" and trim_empty_lines(lines) or {}
         local labels = parse_hover_parameter_labels(lines)
         line_cache.values[cache_key] = (#labels > 0) and labels or false
-        rerender_after_async_hover(bufnr)
+        rerender_after_async_hover(bufnr, line_nr)
     end, bufnr)
 end
 
@@ -1965,7 +2075,7 @@ local function add_arg_hint(bufnr, line_nr, col0, label)
     })
 end
 
-local function render_line(bufnr, line_nr, line, opts)
+render_line = function(bufnr, line_nr, line, opts)
     opts = opts or {}
     local info = local_binding_info(line)
     if opts.type_hints ~= false and type_hints_enabled() and info and not info.declared_type and info.rhs then
@@ -2059,17 +2169,54 @@ local function render_line(bufnr, line_nr, line, opts)
     end
 end
 
-local function clear_type_marks(bufnr, start_line, end_line)
+clear_type_marks = function(bufnr, start_line, end_line)
     bufnr = bufnr or vim.api.nvim_get_current_buf()
     if vim.api.nvim_buf_is_valid(bufnr) then
+        local line_count = vim.api.nvim_buf_line_count(bufnr)
+        if start_line then
+            start_line = math.max(0, math.min(start_line, line_count))
+        end
+        if end_line then
+            end_line = math.max(start_line or 0, math.min(end_line, line_count))
+        end
         vim.api.nvim_buf_clear_namespace(bufnr, ns_types, start_line or 0, end_line or -1)
     end
 end
 
-local function clear_param_marks(bufnr, start_line, end_line)
+clear_param_marks = function(bufnr, start_line, end_line)
     bufnr = bufnr or vim.api.nvim_get_current_buf()
     if vim.api.nvim_buf_is_valid(bufnr) then
+        local line_count = vim.api.nvim_buf_line_count(bufnr)
+        if start_line then
+            start_line = math.max(0, math.min(start_line, line_count))
+        end
+        if end_line then
+            end_line = math.max(start_line or 0, math.min(end_line, line_count))
+        end
         vim.api.nvim_buf_clear_namespace(bufnr, ns_params, start_line or 0, end_line or -1)
+    end
+end
+
+local function clear_render_ranges(bufnr, start_line, end_line)
+    local ranges = {}
+    local previous = state.render_ranges[bufnr]
+    if previous then
+        ranges[#ranges + 1] = previous
+    end
+    if start_line and end_line then
+        ranges[#ranges + 1] = { start_line = start_line, end_line = end_line }
+    end
+
+    local seen = {}
+    for _, range in ipairs(ranges) do
+        local range_start = math.max(0, tonumber(range.start_line) or 0)
+        local range_end = math.max(range_start, tonumber(range.end_line) or range_start)
+        local key = range_start .. ":" .. range_end
+        if not seen[key] then
+            seen[key] = true
+            clear_type_marks(bufnr, range_start, range_end)
+            clear_param_marks(bufnr, range_start, range_end)
+        end
     end
 end
 
@@ -2084,6 +2231,14 @@ function M.clear(bufnr)
     state.hover_param_cache[bufnr] = nil
     state.hover_param_pending[bufnr] = nil
     state.infer_cache[bufnr] = nil
+    state.render_ranges[bufnr] = nil
+    state.hover_render_lines[bufnr] = nil
+    local hover_timer = state.hover_render_timers[bufnr]
+    if hover_timer then
+        hover_timer:stop()
+        hover_timer:close()
+        state.hover_render_timers[bufnr] = nil
+    end
 end
 
 function M.hide(bufnr)
@@ -2108,11 +2263,7 @@ function M.render(bufnr, opts)
         return false
     end
 
-    local winid = preferred_win_for_buf(bufnr)
-    local cursor = winid and vim.api.nvim_win_is_valid(winid) and vim.api.nvim_win_get_cursor(winid) or vim.api.nvim_win_get_cursor(0)
-    local cursor_line = (cursor[1] or 1) - 1
-    local cursor_col1 = (cursor[2] or 0) + 1
-    local start_line, end_line = render_range(bufnr)
+    local cursor_line, cursor_col1 = cursor_context_for_buf(bufnr)
 
     local current_line = vim.api.nvim_buf_get_lines(bufnr, cursor_line, cursor_line + 1, false)[1] or ""
     local current_param_calls = parameter_hints_enabled() and parameter_calls_for_cursor(current_line, cursor_col1) or {}
@@ -2134,6 +2285,15 @@ function M.render(bufnr, opts)
         state.infer_cache[bufnr] = nil
     end
 
+    if
+        opts.manual
+        and not opts.cursor_only
+        and large_file_auto_skip(bufnr)
+        and vim.g.cangjie_pseudo_inlay_hints_large_file_manual_full ~= true
+    then
+        opts.cursor_only = true
+    end
+
     if opts.cursor_only then
         if state.param_keys[bufnr] == param_key then
             vim.b[bufnr].cangjie_pseudo_inlay_hints_enabled = true
@@ -2151,6 +2311,18 @@ function M.render(bufnr, opts)
         return true
     end
 
+    if not opts.manual and large_file_auto_skip(bufnr) then
+        local previous = state.render_ranges[bufnr]
+        if not (previous and previous.manual) then
+            clear_render_ranges(bufnr)
+            state.render_ranges[bufnr] = nil
+        end
+        state.render_keys[bufnr] = nil
+        vim.b[bufnr].cangjie_pseudo_inlay_hints_enabled = true
+        return true
+    end
+
+    local start_line, end_line = render_range(bufnr)
     local render_key = render_key_for_view(bufnr, cursor_line, cursor_col1, start_line, end_line)
     if state.render_keys[bufnr] == render_key then
         vim.b[bufnr].cangjie_pseudo_inlay_hints_enabled = true
@@ -2158,8 +2330,7 @@ function M.render(bufnr, opts)
     end
 
     local lines = vim.api.nvim_buf_get_lines(bufnr, start_line, end_line, false)
-    clear_type_marks(bufnr)
-    clear_param_marks(bufnr)
+    clear_render_ranges(bufnr, start_line, end_line)
     for idx, line in ipairs(lines) do
         local line_nr = start_line + idx - 1
         render_line(bufnr, line_nr, line, {
@@ -2169,6 +2340,7 @@ function M.render(bufnr, opts)
         })
     end
     state.render_keys[bufnr] = render_key
+    state.render_ranges[bufnr] = { start_line = start_line, end_line = end_line, manual = opts.manual == true }
     state.param_keys[bufnr] = param_key
     vim.b[bufnr].cangjie_pseudo_inlay_hints_enabled = true
     return true
@@ -2194,39 +2366,39 @@ function M.manage(action)
     if action == "toggle" then
         vim.g.cangjie_pseudo_inlay_hints = not enabled()
         if enabled() then
-            M.render(bufnr)
+            M.render(bufnr, { manual = true })
         else
             M.clear(bufnr)
             vim.b[bufnr].cangjie_pseudo_inlay_hints_enabled = false
         end
     elseif action == "on" then
         vim.g.cangjie_pseudo_inlay_hints = true
-        M.render(bufnr)
+        M.render(bufnr, { manual = true })
     elseif action == "off" then
         vim.g.cangjie_pseudo_inlay_hints = false
         M.clear(bufnr)
         vim.b[bufnr].cangjie_pseudo_inlay_hints_enabled = false
     elseif action == "refresh" then
         M.clear(bufnr)
-        M.render(bufnr, { force = true })
+        M.render(bufnr, { force = true, manual = true })
     elseif action == "toggle-types" then
         vim.g.cangjie_pseudo_inlay_hints_types = not type_hints_enabled()
-        M.render(bufnr)
+        M.render(bufnr, { manual = true })
     elseif action == "toggle-params" then
         vim.g.cangjie_pseudo_inlay_hints_parameters = not parameter_hints_enabled()
-        M.render(bufnr)
+        M.render(bufnr, { manual = true })
     elseif action == "types-on" then
         vim.g.cangjie_pseudo_inlay_hints_types = true
-        M.render(bufnr)
+        M.render(bufnr, { manual = true })
     elseif action == "types-off" then
         vim.g.cangjie_pseudo_inlay_hints_types = false
-        M.render(bufnr)
+        M.render(bufnr, { manual = true })
     elseif action == "params-on" then
         vim.g.cangjie_pseudo_inlay_hints_parameters = true
-        M.render(bufnr)
+        M.render(bufnr, { manual = true })
     elseif action == "params-off" then
         vim.g.cangjie_pseudo_inlay_hints_parameters = false
-        M.render(bufnr)
+        M.render(bufnr, { manual = true })
     elseif action == "status" then
         local status = M.status(bufnr)
         vim.notify(

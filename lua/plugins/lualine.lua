@@ -15,6 +15,9 @@ return {
             end
 
             local function formatter_name()
+                if vim.bo.filetype == "Cangjie" and _G.CangjiePerf and _G.CangjiePerf.enabled(0) then
+                    return "fmt:perf"
+                end
                 local ok, conform = pcall(require, "conform")
                 if not ok then
                     return "fmt:none"
@@ -28,6 +31,9 @@ return {
             end
 
             local function lsp_count()
+                if vim.bo.filetype == "Cangjie" and _G.CangjiePerf and _G.CangjiePerf.enabled(0) then
+                    return "lsp:perf"
+                end
                 return "lsp:" .. tostring(#vim.lsp.get_clients({ bufnr = 0 }))
             end
 
